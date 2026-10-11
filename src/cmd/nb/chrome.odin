@@ -2,10 +2,11 @@ package main
 
 import "core:os"
 import "core:strings"
-import "core:unicode/utf8"
 
 import sdl "vendor:sdl3"
 
+import "../../abi"
+import "../../field"
 import "../../layout"
 import "../../proto"
 
@@ -23,6 +24,12 @@ reload_rect :: proc() -> layout.Rect { return {70, BUTTON_Y, 66, BUTTON_H} }
 address_rect :: proc(b: ^Browser) -> layout.Rect {
 	vw, _ := viewport_size(b)
 	return {144, BUTTON_Y, max(vw - 152, 40), BUTTON_H}
+}
+
+// The part of the address bar that holds text.
+address_inner :: proc(b: ^Browser) -> layout.Rect {
+	r := address_rect(b)
+	return {r.x + 8, r.y, r.w - 16, r.h}
 }
 
 ADDRESS_FONT :: layout.Font{size = 14}
@@ -46,45 +53,24 @@ set_address_focus :: proc(b: ^Browser, focus: bool) {
 	b.address_focus = focus
 	if focus {
 		b.find_focus = false
-		strings.builder_reset(&b.address)
-		strings.write_string(&b.address, current_location(b))
-		b.address_select_all = true
+		field.set_text(&b.address, current_location(b))
+		field.select_all(&b.address) // typing replaces the location
 	}
 	update_text_input(b)
 	b.dirty = true
 }
 
-address_type :: proc(b: ^Browser, text: string) {
-	if b.address_select_all {
-		strings.builder_reset(&b.address)
-		b.address_select_all = false
-	}
-	strings.write_string(&b.address, text)
-	b.dirty = true
-}
-
+// Keys for the address bar that are not editing keys.
 address_key :: proc(b: ^Browser, key: sdl.Keycode) {
 	switch key {
 	case sdl.K_RETURN, sdl.K_KP_ENTER:
-		target := strings.trim_space(strings.to_string(b.address))
+		target := strings.trim_space(field.text(&b.address))
 		set_address_focus(b, false)
 		if target != "" {
 			open_location(b, address_target(target, context.temp_allocator))
 		}
 	case sdl.K_ESCAPE:
 		set_address_focus(b, false)
-	case sdl.K_BACKSPACE:
-		if b.address_select_all {
-			strings.builder_reset(&b.address)
-			b.address_select_all = false
-		} else if text := strings.to_string(b.address); len(text) > 0 {
-			_, size := utf8.decode_last_rune_in_string(text)
-			resize(&b.address.buf, len(text) - size)
-		}
-		b.dirty = true
-	case sdl.K_LEFT, sdl.K_RIGHT, sdl.K_HOME, sdl.K_END:
-		b.address_select_all = false // keep the text, start editing at the end
-		b.dirty = true
 	}
 }
 
@@ -98,7 +84,7 @@ address_target :: proc(text: string, allocator := context.allocator) -> string {
 	return strings.concatenate({proto.SCHEME, text}, allocator)
 }
 
-toolbar_click :: proc(b: ^Browser, x, y: f32) {
+toolbar_click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, clicks: int) {
 	switch {
 	case layout.rect_contains(back_rect(), x, y):
 		set_address_focus(b, false)
@@ -107,7 +93,11 @@ toolbar_click :: proc(b: ^Browser, x, y: f32) {
 		set_address_focus(b, false)
 		reload(b)
 	case layout.rect_contains(address_rect(b), x, y):
-		set_address_focus(b, true)
+		if b.address_focus {
+			field_press(b, .Address, x, mods, clicks)
+		} else {
+			set_address_focus(b, true) // the first click selects the whole location
+		}
 	case:
 		set_address_focus(b, false)
 	}
@@ -138,26 +128,18 @@ draw_toolbar :: proc(b: ^Browser, vw: f32) {
 	draw_button(b, KEY_RELOAD, reload_rect(), "Reload", b.page_path != "")
 
 	r := address_rect(b)
+	_, th := measure_text(&b.fonts, "", ADDRESS_FONT, 0)
+	ty := r.y + (r.h - th) / 2
 	fill_rect(b, r, b.theme.input)
 	if b.address_focus {
 		stroke_rect(b, r, b.theme.focus, 2)
 	} else {
 		stroke_rect(b, r, b.theme.input_edge)
 	}
-	text := strings.to_string(b.address) if b.address_focus else current_location(b)
-	tw, th := measure_text(&b.fonts, text, ADDRESS_FONT, 0)
-	inner := layout.Rect{r.x + 8, r.y, r.w - 16, r.h}
-	offset := max(tw - inner.w + 2, 0) if b.address_focus else 0
-	tx, ty := inner.x - offset, r.y + (r.h - th) / 2
-
-	clip := sdl.Rect{i32(inner.x * b.scale), i32(inner.y * b.scale), i32(inner.w * b.scale), i32(inner.h * b.scale)}
-	sdl.SetRenderClipRect(b.renderer, &clip)
-	if b.address_focus && b.address_select_all && len(text) > 0 {
-		fill_rect(b, {tx, ty, tw, th}, {0xC7, 0xDB, 0xFA, 0xFF})
-	}
-	draw_text(b, KEY_ADDRESS, text, ADDRESS_FONT, 0, b.theme.text, tx, ty)
-	if b.address_focus && !b.address_select_all {
-		fill_rect(b, {tx + tw, ty + 2, 1.5, th - 4}, b.theme.text)
+	if b.address_focus {
+		draw_field(b, KEY_ADDRESS, field.text(&b.address), ADDRESS_FONT, b.theme.text, address_inner(b), ty, &b.address)
+	} else {
+		draw_field(b, KEY_ADDRESS, current_location(b), ADDRESS_FONT, b.theme.text, address_inner(b), ty)
 	}
 	sdl.SetRenderClipRect(b.renderer, nil)
 }

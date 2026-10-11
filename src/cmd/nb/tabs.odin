@@ -8,6 +8,7 @@ import "core:time"
 import sdl "vendor:sdl3"
 import ttf "vendor:sdl3/ttf"
 
+import "../../field"
 import "../../host"
 import "../../layout"
 import "../../proto"
@@ -92,6 +93,7 @@ close_tab :: proc(b: ^Browser, t: ^Tab) -> bool {
 	delete(t.texts)
 	delete(t.canvases)
 	delete(t.matches)
+	field.destroy(&t.input)
 	layout.result_destroy(&t.lay)
 	free(t)
 	ordered_remove(&b.tabs, i)

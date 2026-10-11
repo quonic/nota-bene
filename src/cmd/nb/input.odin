@@ -2,11 +2,11 @@ package main
 
 import "core:fmt"
 import "core:strings"
-import "core:unicode/utf8"
 
 import sdl "vendor:sdl3"
 
 import "../../abi"
+import "../../field"
 import "../../host"
 import "../../layout"
 
@@ -45,6 +45,11 @@ set_focus :: proc(b: ^Browser, h: abi.Handle) {
 		return
 	}
 	b.focus = h
+	b.input.scroll_x = 0
+	if n := host.node_get(&b.page, h); n != nil && n.kind == .Input {
+		field.set_text(&b.input, n.text)
+		field.move(&b.input, .End)
+	}
 	update_text_input(b)
 	b.dirty = true
 }
@@ -87,7 +92,6 @@ push_event :: proc(b: ^Browser, ev: abi.Event) {
 	}
 }
 
-// A click at logical window coordinates.
 // A click at logical window coordinates. Ctrl+click and middle click open
 // links in a new background tab.
 click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, middle := false, clicks := 1) {
@@ -96,14 +100,17 @@ click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, middle := false, clic
 		return
 	}
 	if y < CHROME_HEIGHT {
-		toolbar_click(b, x, y)
+		toolbar_click(b, x, y, mods, clicks)
 		return
 	}
 	set_address_focus(b, false)
 	if find_bar_contains(b, x, y) {
-		b.find_focus = true
-		update_text_input(b)
-		b.dirty = true
+		_, vh := viewport_size(b)
+		if layout.rect_contains(find_field_inner(b, CHROME_HEIGHT + vh), x, y) || b.find_focus {
+			b.find_focus = true
+			update_text_input(b)
+			field_press(b, .Find, x, mods, clicks)
+		}
 		return
 	}
 	if b.find_focus {
@@ -118,7 +125,7 @@ click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, middle := false, clic
 	hit := layout.hit_test(&b.lay, x, dy)
 	if hit < 0 {
 		set_focus(b, abi.INVALID_HANDLE)
-		begin_selection(b, x, dy, clicks) // the margin beside text still selects it
+		begin_selection(b, x, dy, clicks, mods) // the margin beside text still selects it
 		return
 	}
 	if link := layout.find_ancestor(&b.lay, hit, {.Link}); link >= 0 && b.lay.items[link].href != "" {
@@ -131,13 +138,16 @@ click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, middle := false, clic
 	target := layout.find_ancestor(&b.lay, hit, INTERACTIVE)
 	if target < 0 {
 		// Plain content: pressing here starts a text selection.
-		begin_selection(b, x, dy, clicks)
+		begin_selection(b, x, dy, clicks, mods)
 		target = hit
 	} else {
 		clear_selection(b)
 	}
 	item := b.lay.items[target]
 	set_focus(b, item.handle if item.kind == .Input else abi.INVALID_HANDLE)
+	if item.kind == .Input {
+		field_press(b, .Input, x, mods, clicks)
+	}
 	origin := item.text_rect if item.kind == .Canvas else item.rect
 	push_event(b, abi.Event {
 		kind   = .Click,
@@ -177,6 +187,10 @@ hover :: proc(b: ^Browser, x, y: f32) {
 // Mouse moved with the left button held: extend the selection, scrolling
 // when the pointer leaves the content area.
 drag :: proc(b: ^Browser, x, y: f32) {
+	if b.field_drag != .None {
+		field_drag_to(b, x)
+		return
+	}
 	if !b.selecting {
 		return
 	}
@@ -198,26 +212,6 @@ scroll_by :: proc(b: ^Browser, dy: f32) {
 	if b.scroll_y != old {
 		b.dirty = true
 	}
-}
-
-// Edits the focused Input. Returns true if the key was consumed.
-edit_input :: proc(b: ^Browser, key: sdl.Keycode) -> bool {
-	n := host.node_get(&b.page, b.focus)
-	if n == nil {
-		return false
-	}
-	switch key {
-	case sdl.K_BACKSPACE:
-		if len(n.text) > 0 {
-			_, size := utf8.decode_last_rune_in_string(n.text)
-			host.page_input_edit(&b.page, b.focus, n.text[:len(n.text) - size])
-		}
-		return true
-	case sdl.K_ESCAPE:
-		set_focus(b, abi.INVALID_HANDLE)
-		return true
-	}
-	return false
 }
 
 // Window-level keys, handled before the page or the address bar sees them.
@@ -246,74 +240,18 @@ browser_shortcut :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers) -> 
 		} else {
 			step_match(b, .Shift in mods)
 		}
-	case ctrl && key == 'a':
-		switch {
-		case b.address_focus:
-			b.address_select_all = true
-			b.dirty = true
-		case b.find_focus:
-			b.find_select_all = true
-			b.dirty = true
-		case b.focus != abi.INVALID_HANDLE:
-			return false // a page Input: let the page see it
-		case:
-			select_all(b)
-		}
-	case ctrl && (key == 'c' || key == 'x' || key == 'v'):
-		return clipboard_key(b, key)
-	case:
-		return false
-	}
-	return true
-}
-
-// Copy, cut and paste for whatever text field has focus: the address bar or
-// a page Input. Without one, the keys go to the page as usual.
-clipboard_key :: proc(b: ^Browser, key: sdl.Keycode) -> bool {
-	current: string
-	input: ^host.Node
-	switch {
-	case b.address_focus:
-		current = strings.to_string(b.address)
-	case b.find_focus:
-		current = strings.to_string(b.find_query)
-	case b.focus != abi.INVALID_HANDLE:
-		input = host.node_get(&b.page, b.focus)
-		if input == nil {
-			return false
-		}
-		current = input.text
-	case b.has_selection && key == 'c':
+	case ctrl && key == 'a' && focused_field(b) == .None:
+		select_all(b)
+	case ctrl && key == 'c' && focused_field(b) == .None && selection_nonempty(b):
 		_ = sdl.SetClipboardText(strings.clone_to_cstring(selected_text(b), context.temp_allocator))
 		set_message(b, "copied the selection")
-		return true
+	case ctrl && key == 'v' && focused_field(b) != .None:
+		// A paste arrives like typing, so a page Input sees Text events.
+		if text, ok := clipboard_line(); ok {
+			handle_text(b, text, typing = false)
+		}
 	case:
 		return false
-	}
-	switch key {
-	case 'c', 'x':
-		_ = sdl.SetClipboardText(strings.clone_to_cstring(current, context.temp_allocator))
-		if key == 'x' {
-			if b.address_focus {
-				strings.builder_reset(&b.address)
-				b.dirty = true
-			} else if b.find_focus {
-				strings.builder_reset(&b.find_query)
-				refresh_matches(b)
-			} else {
-				host.page_input_edit(&b.page, b.focus, "")
-			}
-		}
-	case 'v':
-		raw := sdl.GetClipboardText()
-		if raw == nil {
-			return true
-		}
-		defer sdl.free(raw)
-		// Inputs are single-line: newlines become spaces.
-		pasted, _ := strings.replace_all(string(cstring(raw)), "\n", " ", context.temp_allocator)
-		pasted, _ = strings.replace_all(pasted, "\r", "", context.temp_allocator)
-		handle_text(b, pasted)
 	}
 	return true
 }
@@ -325,15 +263,24 @@ handle_key :: proc(b: ^Browser, e: sdl.KeyboardEvent) {
 	}
 	if b.address_focus {
 		if e.down {
-			address_key(b, e.key)
+			if handled, _ := field_key(b, &b.address, e.key, mods); !handled {
+				address_key(b, e.key)
+			}
 		}
 		return // the page does not see keys typed into the address bar
 	}
 	if b.find_focus {
 		if e.down {
-			find_key(b, e.key, mods)
+			if handled, changed := field_key(b, &b.find, e.key, mods); changed {
+				refresh_matches(b)
+			} else if !handled {
+				find_key(b, e.key, mods)
+			}
 		}
 		return
+	}
+	if !e.down && focused_field(b) == .Input && is_edit_key(e.key, mods) {
+		return // the page saw neither the press nor this release
 	}
 	if e.down {
 		switch {
@@ -348,10 +295,21 @@ handle_key :: proc(b: ^Browser, e: sdl.KeyboardEvent) {
 			return
 		case e.key == sdl.K_TAB:
 			cycle_focus(b, .Shift in mods)
-		case b.focus != abi.INVALID_HANDLE:
-			if edit_input(b, e.key) {
+		case focused_field(b) == .Input:
+			// Editing and caret keys belong to the browser; the page sees the
+			// result as a Change event.
+			if handled, changed := field_key(b, &b.input, e.key, mods); handled {
+				if changed {
+					commit_input(b)
+				}
 				return
 			}
+			if e.key == sdl.K_ESCAPE {
+				set_focus(b, abi.INVALID_HANDLE)
+				return
+			}
+		case extend_selection_key(b, e.key, mods):
+			// Shift+arrows moved the selection instead of scrolling.
 		case:
 			_, vh := viewport_size(b)
 			switch e.key {
@@ -375,24 +333,38 @@ handle_key :: proc(b: ^Browser, e: sdl.KeyboardEvent) {
 	}
 }
 
-handle_text :: proc(b: ^Browser, text: string) {
-	if b.address_focus {
-		address_type(b, text)
+// Typed (or, with typing = false, pasted) text for the focused field.
+handle_text :: proc(b: ^Browser, text: string, typing := true) {
+	switch focused_field(b) {
+	case .Address:
+		field.insert(&b.address, text, typing)
+		b.dirty = true
 		return
-	}
-	if b.find_focus {
-		find_type(b, text)
+	case .Find:
+		field.insert(&b.find, text, typing)
+		refresh_matches(b)
 		return
-	}
-	if n := host.node_get(&b.page, b.focus); n != nil && n.kind == .Input {
-		joined := strings.concatenate({n.text, text}, context.temp_allocator)
-		if len(joined) <= abi.MAX_TEXT_LEN {
-			host.page_input_edit(&b.page, b.focus, joined)
+	case .Input:
+		b.input.max_len = abi.MAX_TEXT_LEN
+		if field.insert(&b.input, text, typing) {
+			commit_input(b)
 		}
+	case .None:
 	}
 	for r in text {
 		push_event(b, abi.Event{kind = .Text, handle = b.focus, a = i64(r)})
 	}
+}
+
+// Keys that field_key handles, so their release is not passed on either.
+is_edit_key :: proc(key: sdl.Keycode, mods: abi.Modifiers) -> bool {
+	switch key {
+	case sdl.K_LEFT, sdl.K_RIGHT, sdl.K_HOME, sdl.K_END, sdl.K_BACKSPACE, sdl.K_DELETE:
+		return true
+	case 'a', 'c', 'x', 'v', 'y', 'z':
+		return .Ctrl in mods
+	}
+	return false
 }
 
 dump_tree :: proc(b: ^Browser) {

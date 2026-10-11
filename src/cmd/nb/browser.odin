@@ -54,6 +54,7 @@ Tab :: struct {
 	lay_valid:   bool,
 	scroll_y:    f32,
 	focus:       abi.Handle,
+	input:       Text_Field, // the focused Input's text, caret and undo (fields.odin)
 	hover_href:  string,
 	busy_since:  time.Tick,
 	painted:     u64, // page.paint_version at the last frame
@@ -66,10 +67,12 @@ Tab :: struct {
 	serial:    u64,        // identifies the loaded page, so late fetch answers for an earlier one are dropped
 
 	// Text selection (select.odin)
-	has_selection: bool,
+	has_selection: bool, // a selection, possibly empty: where the user last clicked in page text
 	selecting:     bool, // the mouse button is down, extending the selection
 	sel_anchor:    Text_Pos,
 	sel_focus:     Text_Pos,
+	sel_goal_x:    f32,      // where Shift+Up/Down aim, so a column is kept across short lines
+	sel_goal_at:   Text_Pos, // the focus sel_goal_x was set for; any other move invalidates it
 
 	// Find in page (find.odin)
 	find_open:       bool,
@@ -104,14 +107,14 @@ Browser :: struct {
 	last_serial: u64,
 
 	// Address bar (chrome.odin)
-	address:            strings.Builder,
-	address_focus:      bool,
-	address_select_all: bool, // the next keystroke replaces the whole text
+	address:       Text_Field,
+	address_focus: bool,
 
 	// Find bar (find.odin); the query is shared by all tabs
-	find_query:      strings.Builder,
-	find_focus:      bool,
-	find_select_all: bool,
+	find:       Text_Field,
+	find_focus: bool,
+
+	field_drag: Field_Target, // the field a mouse drag is selecting in
 }
 
 // Logical (layout) size of the content area, which sits between the

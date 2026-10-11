@@ -1,13 +1,12 @@
 package main
 
 import "core:strings"
-import "core:unicode"
-import "core:unicode/utf8"
 
 import sdl "vendor:sdl3"
 import ttf "vendor:sdl3/ttf"
 
 import "../../abi"
+import "../../field"
 import "../../layout"
 
 // A position in page text: a byte offset into a node's text. Positions name
@@ -83,7 +82,6 @@ range_rects :: proc(b: ^Browser, item: ^layout.Item, start, end: int, allocator 
 }
 
 // Rectangles for bytes [start, end) of one text object drawn at `origin`.
-@(private="file")
 text_range_rects :: proc(b: ^Browser, c: ^Cached_Text, start, end: int, origin: [2]f32) -> []layout.Rect {
 	out := make([dynamic]layout.Rect, context.temp_allocator)
 	count: i32
@@ -146,15 +144,22 @@ pos_at_point :: proc(b: ^Browser, x, y: f32) -> (Text_Pos, bool) {
 	}
 	px := i32((x - tr.x) * b.scale)
 	py := i32((max(y, tr.y) - tr.y) * b.scale)
+	offset, _ := text_offset_at(c, px, py)
+	return {item.handle, clamp(offset, 0, len(item.text))}, true
+}
+
+// The byte offset in a text object nearest physical point (px, py),
+// relative to its top left. The right half of a character means after it.
+text_offset_at :: proc(c: ^Cached_Text, px, py: i32) -> (int, bool) {
 	sub: ttf.SubString
 	if !ttf.GetTextSubStringForPoint(c.text, px, py, &sub) {
-		return {item.handle, 0}, true
+		return 0, false
 	}
 	offset := int(sub.offset)
 	if px > sub.rect.x + sub.rect.w / 2 {
-		offset += int(sub.length) // the right half of a character means after it
+		offset += int(sub.length)
 	}
-	return {item.handle, clamp(offset, 0, len(item.text))}, true
+	return offset, true
 }
 
 // Inline text: the fragment on the line under the point, or the nearest one
@@ -192,15 +197,7 @@ fragment_pos_at_point :: proc(b: ^Browser, x, y: f32) -> (Text_Pos, bool) {
 	if c == nil {
 		return {item.handle, f.start}, true
 	}
-	px := i32((x - f.rect.x) * b.scale)
-	sub: ttf.SubString
-	if !ttf.GetTextSubStringForPoint(c.text, px, 0, &sub) {
-		return {item.handle, f.start}, true
-	}
-	offset := int(sub.offset)
-	if px > sub.rect.x + sub.rect.w / 2 {
-		offset += int(sub.length)
-	}
+	offset, _ := text_offset_at(c, i32((x - f.rect.x) * b.scale), 0)
 	return {item.handle, clamp(f.start + offset, f.start, f.end)}, true
 }
 
@@ -263,18 +260,27 @@ clear_selection :: proc(b: ^Browser) {
 	b.selecting = false
 }
 
-// Starts a selection at a document point (mouse down on page text).
-begin_selection :: proc(b: ^Browser, x, y: f32, clicks: int) {
+// Starts a selection at a document point (mouse down on page text). Shift
+// extends the current one instead; a double click selects a word and a
+// triple click the paragraph.
+begin_selection :: proc(b: ^Browser, x, y: f32, clicks: int, mods: abi.Modifiers) {
 	pos, ok := pos_at_point(b, x, y)
 	if !ok {
 		clear_selection(b)
 		return
 	}
-	b.sel_anchor, b.sel_focus = pos, pos
+	if .Shift in mods && b.has_selection {
+		b.sel_focus = pos
+	} else {
+		b.sel_anchor, b.sel_focus = pos, pos
+	}
 	b.has_selection = true
 	b.selecting = true
-	if clicks == 2 {
+	switch {
+	case clicks == 2:
 		select_word(b, pos)
+	case clicks >= 3:
+		select_paragraph(b, pos)
 	}
 	b.dirty = true
 }
@@ -289,41 +295,53 @@ extend_selection :: proc(b: ^Browser, x, y: f32) {
 	}
 }
 
+// The mouse button was released: ends a drag in page text or in a field.
+// A click without a drag leaves an empty selection: nothing is highlighted,
+// but Shift+click and Shift+arrows extend from there.
 end_selection :: proc(b: ^Browser) {
-	if b.selecting && b.sel_anchor == b.sel_focus {
-		b.has_selection = false // a click, not a drag
-		b.dirty = true
-	}
+	b.field_drag = .None
 	b.selecting = false
 }
 
-// Double click: the word (letters, digits, marks) around `pos`.
+// Whether there is selected text, not just an empty selection where the user clicked.
+selection_nonempty :: proc(b: ^Browser) -> bool {
+	ai, ao, zi, zo, ok := selection_span(b)
+	return ok && (ai != zi || ao != zo)
+}
+
+// Double click: the word around `pos`, by the same rule as word moves in fields.
 select_word :: proc(b: ^Browser, pos: Text_Pos) {
 	i := item_index_of(b, pos.handle)
 	if i < 0 {
 		return
 	}
-	text := b.lay.items[i].text
-	is_word :: proc(r: rune) -> bool {
-		return unicode.is_letter(r) || unicode.is_digit(r) || unicode.is_combining(r) || r == '_' || r == '\''
-	}
-	start, end := pos.offset, pos.offset
-	for start > 0 {
-		r, size := utf8.decode_last_rune_in_string(text[:start])
-		if !is_word(r) {
-			break
-		}
-		start -= size
-	}
-	for end < len(text) {
-		r, size := utf8.decode_rune_in_string(text[end:])
-		if !is_word(r) {
-			break
-		}
-		end += size
-	}
+	start, end := field.word_at(b.lay.items[i].text, pos.offset)
 	b.sel_anchor = {pos.handle, start}
 	b.sel_focus = {pos.handle, end}
+}
+
+// Triple click: the paragraph around `pos`, all the inline items that flow
+// together with it.
+select_paragraph :: proc(b: ^Browser, pos: Text_Pos) {
+	i := item_index_of(b, pos.handle)
+	if i < 0 {
+		return
+	}
+	root := b.lay.items[i].inline_root if b.lay.items[i].inline_root >= 0 else i
+	first, last := -1, -1
+	for &item, j in b.lay.items {
+		if (j == root || item.inline_root == root) && is_text_item(&item) {
+			if first < 0 {
+				first = j
+			}
+			last = j
+		}
+	}
+	if first < 0 {
+		return
+	}
+	b.sel_anchor = {b.lay.items[first].handle, 0}
+	b.sel_focus = {b.lay.items[last].handle, len(b.lay.items[last].text)}
 }
 
 select_all :: proc(b: ^Browser) {
@@ -377,4 +395,140 @@ selected_text :: proc(b: ^Browser, allocator := context.temp_allocator) -> strin
 		prev = i
 	}
 	return strings.to_string(sb)
+}
+
+// Shift with the arrows, Home or End moves the focus end of the page
+// selection: by character (by word with Ctrl), by line, or to the start or
+// end of the line. Returns false if there is no selection to extend.
+extend_selection_key :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers) -> bool {
+	if .Shift not_in mods || !b.has_selection || !b.lay_valid {
+		return false
+	}
+	i := item_index_of(b, b.sel_focus.handle)
+	if i < 0 {
+		return false
+	}
+	offset := min(b.sel_focus.offset, len(b.lay.items[i].text))
+	pos := Text_Pos{b.sel_focus.handle, offset}
+	here := caret_rect(b, i, offset)
+	switch key {
+	case sdl.K_LEFT, sdl.K_RIGHT:
+		pos = step_pos(b, i, offset, key == sdl.K_LEFT, .Ctrl in mods)
+	case sdl.K_UP, sdl.K_DOWN:
+		if b.sel_goal_at != b.sel_focus {
+			b.sel_goal_x = here.x
+		}
+		pos = vertical_pos(b, here, key == sdl.K_UP, b.sel_goal_x, pos)
+	case sdl.K_HOME, sdl.K_END:
+		vw, _ := viewport_size(b)
+		if p, ok := pos_at_point(b, 0 if key == sdl.K_HOME else vw, here.y + here.h / 2); ok {
+			pos = p
+		}
+	case:
+		return false
+	}
+	b.sel_focus = pos
+	if key == sdl.K_UP || key == sdl.K_DOWN {
+		b.sel_goal_at = pos
+	}
+	if j := item_index_of(b, pos.handle); j >= 0 {
+		scroll_into_view(b, caret_rect(b, j, pos.offset))
+	}
+	b.dirty = true
+	return true
+}
+
+// The position on the line above or below the caret at `here`, at column
+// `goal_x`. Probes in half-line steps, so the gap between two paragraphs is
+// skipped; `pos` if there is no line there.
+@(private="file")
+vertical_pos :: proc(b: ^Browser, here: layout.Rect, up: bool, goal_x: f32, pos: Text_Pos) -> Text_Pos {
+	step := max(here.h, 1) / 2 * (-1 if up else 1)
+	for y := here.y + here.h / 2 + step; y >= 0 && y <= b.lay.height; y += step {
+		p, ok := pos_at_point(b, goal_x, y)
+		if !ok {
+			continue
+		}
+		j := item_index_of(b, p.handle)
+		if j < 0 {
+			continue
+		}
+		r := caret_rect(b, j, p.offset)
+		if (r.y + r.h <= here.y + 1) if up else (r.y >= here.y + here.h - 1) {
+			// Another line. A probe in a gap lands at a paragraph's end, so
+			// aim at the goal column in the middle of that line.
+			if q, qok := pos_at_point(b, goal_x, r.y + r.h / 2); qok {
+				return q
+			}
+			return p
+		}
+	}
+	return pos
+}
+
+// One character (or word) left or right of `offset` in item `i`. At the
+// edge of an item it carries on into the previous or next text item: within
+// a paragraph by one more character, since the two edges are the same place
+// on screen; across blocks to the near edge.
+@(private="file")
+step_pos :: proc(b: ^Browser, i, offset: int, back, word: bool) -> Text_Pos {
+	item := &b.lay.items[i]
+	if back && offset > 0 {
+		return {item.handle, field.prev_word(item.text, offset) if word else field.prev_char(item.text, offset)}
+	}
+	if !back && offset < len(item.text) {
+		return {item.handle, field.next_word(item.text, offset) if word else field.next_char(item.text, offset)}
+	}
+	for j := i - 1 if back else i + 1; j >= 0 && j < len(b.lay.items); j += -1 if back else 1 {
+		next := &b.lay.items[j]
+		if !is_text_item(next) {
+			continue
+		}
+		same_paragraph := item.inline_root >= 0 && next.inline_root == item.inline_root
+		switch {
+		case back && same_paragraph:
+			return {next.handle, field.prev_word(next.text, len(next.text)) if word else field.prev_char(next.text, len(next.text))}
+		case back:
+			return {next.handle, len(next.text)}
+		case same_paragraph:
+			return {next.handle, field.next_word(next.text, 0) if word else field.next_char(next.text, 0)}
+		case:
+			return {next.handle, 0}
+		}
+	}
+	return {item.handle, offset}
+}
+
+// A zero-width rectangle at `offset` in item `i`, one line tall.
+caret_rect :: proc(b: ^Browser, i, offset: int) -> layout.Rect {
+	item := &b.lay.items[i]
+	if offset < len(item.text) {
+		if rs := range_rects(b, item, offset, field.next_char(item.text, offset)); len(rs) > 0 {
+			return {rs[0].x, rs[0].y, 0, rs[0].h}
+		}
+	}
+	if offset > 0 {
+		if rs := range_rects(b, item, field.prev_char(item.text, offset), offset); len(rs) > 0 {
+			r := rs[len(rs) - 1]
+			return {r.x + r.w, r.y, 0, r.h}
+		}
+	}
+	_, line_h := measure_text(&b.fonts, "", item.style.font, 0)
+	return {item.text_rect.x, item.text_rect.y, 0, line_h}
+}
+
+// Scrolls as little as possible to bring `r` (document coordinates) into view.
+scroll_into_view :: proc(b: ^Browser, r: layout.Rect) {
+	_, vh := viewport_size(b)
+	margin: f32 = 8
+	old := b.scroll_y
+	if r.y < b.scroll_y {
+		b.scroll_y = r.y - margin
+	} else if r.y + r.h > b.scroll_y + vh {
+		b.scroll_y = r.y + r.h - vh + margin
+	}
+	clamp_scroll(b, vh)
+	if b.scroll_y != old {
+		b.dirty = true
+	}
 }

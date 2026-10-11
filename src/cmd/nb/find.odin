@@ -1,12 +1,11 @@
 package main
 
 import "core:fmt"
-import "core:strings"
-import "core:unicode/utf8"
 
 import sdl "vendor:sdl3"
 
 import "../../abi"
+import "../../field"
 import "../../layout"
 import "../../search"
 
@@ -26,7 +25,7 @@ open_find :: proc(b: ^Browser) {
 	set_address_focus(b, false)
 	b.find_open = true
 	b.find_focus = true
-	b.find_select_all = true
+	field.select_all(&b.find) // typing replaces the last query
 	update_text_input(b)
 	refresh_matches(b)
 	b.dirty = true
@@ -45,7 +44,7 @@ refresh_matches :: proc(b: ^Browser, scroll := true) {
 	clear(&b.matches)
 	b.current_match = -1
 	b.matches_version = b.lay_version
-	query := strings.to_string(b.find_query)
+	query := field.text(&b.find)
 	if !b.find_open || query == "" || !b.lay_valid {
 		return
 	}
@@ -102,34 +101,27 @@ scroll_to_match :: proc(b: ^Browser) {
 	}
 }
 
-find_type :: proc(b: ^Browser, text: string) {
-	if b.find_select_all {
-		strings.builder_reset(&b.find_query)
-		b.find_select_all = false
-	}
-	strings.write_string(&b.find_query, text)
-	refresh_matches(b)
-}
-
+// Keys for the find bar that are not editing keys.
 find_key :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers) {
 	switch key {
 	case sdl.K_RETURN, sdl.K_KP_ENTER:
 		step_match(b, .Shift in mods)
 	case sdl.K_ESCAPE:
 		close_find(b)
-	case sdl.K_BACKSPACE:
-		if b.find_select_all {
-			strings.builder_reset(&b.find_query)
-			b.find_select_all = false
-		} else if q := strings.to_string(b.find_query); len(q) > 0 {
-			_, size := utf8.decode_last_rune_in_string(q)
-			resize(&b.find_query.buf, len(q) - size)
-		}
-		refresh_matches(b)
-	case sdl.K_LEFT, sdl.K_RIGHT, sdl.K_HOME, sdl.K_END:
-		b.find_select_all = false
-		b.dirty = true
 	}
+}
+
+// The find bar's text box, inside its border. `y` is the bar's top edge.
+find_field_inner :: proc(b: ^Browser, y: f32) -> layout.Rect {
+	box := find_field_rect(b, y)
+	return {box.x + 6, box.y, box.w - 12, box.h}
+}
+
+@(private="file")
+find_field_rect :: proc(b: ^Browser, y: f32) -> layout.Rect {
+	vw, _ := viewport_size(b)
+	lw, _ := measure_text(&b.fonts, "Find", FIND_FONT, 0)
+	return {16 + lw, y + 3, min(280, vw / 2), STATUS_BAR_HEIGHT - 6}
 }
 
 // The find bar replaces the status bar while it is open. `y` is its top edge.
@@ -140,25 +132,13 @@ draw_find_bar :: proc(b: ^Browser, vw, y: f32) {
 	_, th := measure_text(&b.fonts, "", FIND_FONT, 0)
 	ty := y + (STATUS_BAR_HEIGHT - th) / 2
 
-	lw, _ := measure_text(&b.fonts, "Find", FIND_FONT, 0)
 	draw_text(b, KEY_FIND_LABEL, "Find", FIND_FONT, 0, muted, 8, ty)
 
-	field := layout.Rect{16 + lw, y + 3, min(280, vw / 2), STATUS_BAR_HEIGHT - 6}
-	fill_rect(b, field, b.theme.input)
-	stroke_rect(b, field, b.theme.focus if b.find_focus else b.theme.input_edge, 2 if b.find_focus else 1)
-	query := strings.to_string(b.find_query)
-	qw, _ := measure_text(&b.fonts, query, FIND_FONT, 0)
-	inner := layout.Rect{field.x + 6, field.y, field.w - 12, field.h}
-	offset := max(qw - inner.w + 2, 0)
-	clip := sdl.Rect{i32(inner.x * b.scale), i32(inner.y * b.scale), i32(inner.w * b.scale), i32(inner.h * b.scale)}
-	sdl.SetRenderClipRect(b.renderer, &clip)
-	if b.find_focus && b.find_select_all && query != "" {
-		fill_rect(b, {inner.x - offset, ty, qw, th}, SELECTION_COLOR)
-	}
-	draw_text(b, KEY_FIND_TEXT, query, FIND_FONT, 0, b.theme.text, inner.x - offset, ty)
-	if b.find_focus && !b.find_select_all {
-		fill_rect(b, {inner.x - offset + qw, ty + 2, 1.5, th - 4}, b.theme.text)
-	}
+	box := find_field_rect(b, y)
+	fill_rect(b, box, b.theme.input)
+	stroke_rect(b, box, b.theme.focus if b.find_focus else b.theme.input_edge, 2 if b.find_focus else 1)
+	query := field.text(&b.find)
+	draw_field(b, KEY_FIND_TEXT, query, FIND_FONT, b.theme.text, find_field_inner(b, y), ty, &b.find if b.find_focus else nil)
 	sdl.SetRenderClipRect(b.renderer, nil)
 
 	count: string
@@ -170,7 +150,7 @@ draw_find_bar :: proc(b: ^Browser, vw, y: f32) {
 	case:
 		count = fmt.tprintf("%d of %d", b.current_match + 1, len(b.matches))
 	}
-	draw_text(b, KEY_FIND_COUNT, count, FIND_FONT, 0, muted, field.x + field.w + 12, ty)
+	draw_text(b, KEY_FIND_COUNT, count, FIND_FONT, 0, muted, box.x + box.w + 12, ty)
 }
 
 find_bar_contains :: proc(b: ^Browser, x, y: f32) -> bool {

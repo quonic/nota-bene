@@ -7,6 +7,7 @@ import "core:strings"
 import sdl "vendor:sdl3"
 import ttf "vendor:sdl3/ttf"
 
+import "../../field"
 import "../../host"
 import "../../layout"
 import "../../vm"
@@ -179,14 +180,12 @@ draw_item :: proc(b: ^Browser, item: ^layout.Item, index: int, dy: f32) {
 		draw_text(b, KEY_ALT_BASE + u64(item.handle), alt, {size = 13}, tr.w - 8, b.theme.text, tr.x + 4, tr.y + 4)
 		return
 	case .Input:
-		// Single line, scrolled so the end of the text (the caret) stays visible.
+		// One line; while focused, with the caret and selection kept in view.
 		inner := layout.Rect{r.x + st.padding, r.y, r.w - 2 * st.padding, r.h}
-		offset := max(tr.w - inner.w + 2, 0)
-		clip := sdl.Rect{i32(inner.x * b.scale), i32(inner.y * b.scale), i32(inner.w * b.scale), i32(inner.h * b.scale)}
-		sdl.SetRenderClipRect(b.renderer, &clip)
-		draw_text(b, u64(item.handle), item.text, st.font, 0, st.color, tr.x - offset, tr.y)
-		if focused {
-			fill_rect(b, {tr.x + tr.w - offset, tr.y + 2, 1.5, tr.h - 4}, st.color)
+		if focused && sync_input(b) {
+			draw_field(b, u64(item.handle), field.text(&b.input), st.font, st.color, inner, tr.y, &b.input)
+		} else {
+			draw_field(b, u64(item.handle), item.text, st.font, st.color, inner, tr.y)
 		}
 		content := content_clip(b)
 		sdl.SetRenderClipRect(b.renderer, &content)

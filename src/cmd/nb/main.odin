@@ -12,6 +12,7 @@ import sdl "vendor:sdl3"
 import ttf "vendor:sdl3/ttf"
 
 import "../../abi"
+import "../../field"
 import "../../host"
 import "../../layout"
 import "../../loader"
@@ -29,16 +30,21 @@ options:
   --click X,Y         after the page settles, click at X,Y (repeatable)
   --middle-click X,Y  after the page settles, middle-click at X,Y (repeatable)
   --double-click X,Y  after the page settles, double-click at X,Y (repeatable)
+  --triple-click X,Y  after the page settles, triple-click at X,Y (repeatable)
+  --shift-click X,Y   after the page settles, Shift+click at X,Y (repeatable)
   --drag X1,Y1,X2,Y2  after the page settles, drag with the left button (repeatable)
   --print-clipboard   print the clipboard's text to stdout (for scripted checks)
   --type TEXT         after the page settles, type TEXT (repeatable)
-  --key NAME          after the page settles, press a key: enter, escape, tab, backspace
-                      or a letter, optionally as ctrl+NAME (repeatable)
+  --key NAME          after the page settles, press a key: enter, escape, tab, backspace,
+                      delete, left, right, up, down, home, end or a letter, optionally
+                      with ctrl+ and/or shift+ in front (repeatable)
   --screenshot FILE   save a PNG of the window after the page settles, then exit
   -h, --help          show this help
 
 keys: Ctrl+L / F6 address bar, F5 / Ctrl+R reload, Alt+Left back,
-      Tab next input, F12 dump the view tree
+      Tab next input, F12 dump the view tree; in text fields, Shift and Ctrl
+      with the arrows select and move by word, Ctrl+Z / Ctrl+Y undo and redo;
+      on page text, Shift+arrows, Home and End extend the selection
 `
 
 Action :: struct {
@@ -46,6 +52,7 @@ Action :: struct {
 		Click,
 		Middle_Click,
 		Double_Click,
+		Triple_Click,
 		Drag,
 		Type,
 		Key,
@@ -133,8 +140,8 @@ run :: proc(opts: Options) -> int {
 	kh_path, _ := filepath.join({b.profile, "known_hosts"}, context.temp_allocator)
 	proto.known_hosts_load(&b.known_hosts, kh_path)
 	defer net_shutdown(&b)
-	defer strings.builder_destroy(&b.address)
-	defer strings.builder_destroy(&b.find_query)
+	defer field.destroy(&b.address)
+	defer field.destroy(&b.find)
 
 	new_tab(&b, opts.path)
 	defer {
@@ -162,11 +169,15 @@ run :: proc(opts: Options) -> int {
 				next_action += 1
 				switch a.kind {
 				case .Click:
-					click(&b, a.x, a.y, {})
+					click(&b, a.x, a.y, modifiers(a.mod))
+					end_selection(&b)
 				case .Middle_Click:
 					click(&b, a.x, a.y, {}, middle = true)
 				case .Double_Click:
 					click(&b, a.x, a.y, {}, clicks = 2)
+					end_selection(&b)
+				case .Triple_Click:
+					click(&b, a.x, a.y, {}, clicks = 3)
 					end_selection(&b)
 				case .Drag:
 					click(&b, a.x, a.y, {})
@@ -381,6 +392,14 @@ parse_args :: proc(args: []string) -> (opts: Options, ok: bool) {
 			v := value(args, &i) or_return
 			x, y := pair(v, ",") or_return
 			append(&opts.actions, Action{kind = .Double_Click, x = x, y = y})
+		case "--triple-click":
+			v := value(args, &i) or_return
+			x, y := pair(v, ",") or_return
+			append(&opts.actions, Action{kind = .Triple_Click, x = x, y = y})
+		case "--shift-click":
+			v := value(args, &i) or_return
+			x, y := pair(v, ",") or_return
+			append(&opts.actions, Action{kind = .Click, x = x, y = y, mod = {.LSHIFT}})
 		case "--drag":
 			v := value(args, &i) or_return
 			parts := strings.split(v, ",", context.temp_allocator)
@@ -411,9 +430,16 @@ parse_args :: proc(args: []string) -> (opts: Options, ok: bool) {
 			key: sdl.Keycode
 			mod: sdl.Keymod
 			name := v
-			if strings.has_prefix(name, "ctrl+") {
-				mod = {.LCTRL}
-				name = name[len("ctrl+"):]
+			for {
+				if strings.has_prefix(name, "ctrl+") {
+					mod += {.LCTRL}
+					name = name[len("ctrl+"):]
+				} else if strings.has_prefix(name, "shift+") {
+					mod += {.LSHIFT}
+					name = name[len("shift+"):]
+				} else {
+					break
+				}
 			}
 			switch name {
 			case "enter":
@@ -424,12 +450,26 @@ parse_args :: proc(args: []string) -> (opts: Options, ok: bool) {
 				key = sdl.K_TAB
 			case "backspace":
 				key = sdl.K_BACKSPACE
+			case "delete":
+				key = sdl.K_DELETE
+			case "left":
+				key = sdl.K_LEFT
+			case "right":
+				key = sdl.K_RIGHT
+			case "up":
+				key = sdl.K_UP
+			case "down":
+				key = sdl.K_DOWN
+			case "home":
+				key = sdl.K_HOME
+			case "end":
+				key = sdl.K_END
 			case:
 				if len(name) == 1 && name[0] >= 'a' && name[0] <= 'z' {
 					key = sdl.Keycode(name[0])
 				} else {
 					fmt.eprintfln(
-						"nb: --key takes [ctrl+]enter, escape, tab, backspace or a letter",
+						"nb: --key takes [ctrl+][shift+] and enter, escape, tab, backspace, delete, an arrow, home, end or a letter",
 					)
 					return opts, false
 				}

@@ -1,0 +1,26 @@
+# Ignore local configuration files
+ols.json
+*.local.json
+
+# Ignore build artifacts
+build/
+# Ignore sensitive keys
+*.key
+
+# Ignore agent and claude directories
+.agents/
+.claude/
+
+# Ignore temporary files
+*.tmp
+*.swp
+*.bak
+*.log
+*.cache
+*.tmp
+*.swp
+*.bak
+*.log
+*.cache
+*.pid
+*.lock

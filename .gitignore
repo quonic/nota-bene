@@ -9,7 +9,7 @@ build/
 
 # Ignore agent and claude directories
 .agents/
-.claude/
+.claude
 
 # Ignore temporary files
 *.tmp

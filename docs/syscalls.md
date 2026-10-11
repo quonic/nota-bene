@@ -81,9 +81,12 @@ The browser keeps a few keys for itself and does not pass them to the page:
 Ctrl+L / F6 (address bar), F5 / Ctrl+R (reload), Alt+Left (back), F12
 (dump the tree), the tab keys (Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+1…9), find
 (Ctrl+F, F3), and Ctrl+A / Ctrl+C / Ctrl+X / Ctrl+V. Ctrl+A and Ctrl+C on
-page text select and copy it, and the browser does that itself. Ctrl+A in a
-focused Input is passed to the page. While
-the address bar has focus, no keys reach the page.
+page text select and copy it, and the browser does that itself; so do Shift
+with the arrows, Home and End while there is a selection on the page, though
+the page still gets those `Key` events. In a focused Input, the browser also
+keeps the keys it edits with: Left, Right, Home, End, Backspace and Delete
+(with or without Shift and Ctrl), Ctrl+A, and Ctrl+Z / Ctrl+Y for undo and
+redo. While the address bar has focus, no keys reach the page.
 
 **Clipboard.** Pages have no clipboard syscalls. The user copies and pastes
 in Inputs through the browser, and a paste arrives like typing: as `Text`
@@ -145,8 +148,12 @@ say on presentation.
 
 **Input nodes are edited by the browser.** When the user types into a
 focused `Input`, the browser updates the node's text itself and sends
-`Change`. The page never sees half-finished edits and does not have to
-implement text editing. A page can still set the text with `Node_Set_Text`.
+`Change`. The browser keeps the caret, the selection and the undo history,
+so the page does not have to implement text editing, and it sees no `Key`
+events for editing keys, only `Text` for what was typed and `Change` after
+every edit. A page can still set the text with `Node_Set_Text`. The caret
+stays where it was if it still fits, and the user's undo history for that
+Input starts over.
 
 ## Canvas (`0x200`)
 

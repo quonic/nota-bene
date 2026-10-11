@@ -59,9 +59,9 @@ Keys:
 - Ctrl+L or F6: address bar (type `nb://…`, a file path, or just `host/path`)
 - Ctrl+T: new tab. Ctrl+W: close the tab. Ctrl+Tab and Ctrl+Shift+Tab: next and previous tab. Ctrl+1…9: go to a tab
 - Ctrl+click or middle-click a link: open it in a background tab
-- Drag to select page text, double-click to select a word, Ctrl+A to select everything, then Ctrl+C to copy
+- Drag to select page text, double-click to select a word, triple-click for a paragraph, Ctrl+A to select everything, then Ctrl+C to copy. Shift+click, and Shift with the arrows, Home or End, extend the selection
 - Ctrl+F: find in page. Enter or F3: next match. Shift+Enter or Shift+F3: previous match. Esc: close
-- Ctrl+C, Ctrl+X, Ctrl+V: copy, cut and paste in the address bar, the find bar and page inputs
+- In the address bar, the find bar and page inputs: the arrows, Home and End move the caret (by word with Ctrl, selecting with Shift), the mouse places it and selects, Ctrl+C, Ctrl+X, Ctrl+V copy, cut and paste, and Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) undo and redo
 - F5 or Ctrl+R: reload
 - Alt+Left: back
 - Tab: next input

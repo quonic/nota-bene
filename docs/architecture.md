@@ -30,6 +30,7 @@ and no JavaScript runtime.
 | `src/vm` | `vm` | User-mode RV64GC interpreter. `run(cpu, budget)` stops on budget, `ecall`, `ebreak` or fault. It knows nothing about syscalls. |
 | `src/loader` | `loader` | Validates and maps an ELF64 executable, sets up the stack, parses the `.nb_manifest` section. |
 | `src/host` | `host` | The page object: drives the VM, dispatches syscalls, owns the handle table and the view tree, and checks fetches against the manifest. No I/O; front ends plug in through callbacks (logging, fetch). |
+| `src/field` | `field` | One-line text editing: caret, selection, word moves, undo. Used by `nb` for the address bar, the find bar and page Inputs. |
 | `src/layout` | `layout` | Turns the view tree into positioned boxes. Text measurement is pluggable, so it is tested without graphics. |
 | `src/cmd/nb` | `main` | The browser window: SDL3 for windowing, input and drawing, SDL3_ttf (FreeType and HarfBuzz) for text. |
 | `src/cmd/nbrun` | `main` | Headless runner for development and tests. |
@@ -199,10 +200,19 @@ contains pages written directly in assembly.
    - **An address bar** with Back and Reload. Bare `host/path` addresses mean
      nb://.
    - **A clipboard** for the address bar and page inputs.
+   - **Text fields.** The address bar, the find bar and page Inputs share
+     `src/field`: a caret, a selection, moves by character (keeping
+     combining marks with their letter) and by word, and undo that groups a
+     run of typing into one step. It has no graphics, so it is unit tested;
+     `nb` adds drawing, mouse selection and sideways scrolling.
    - **Text selection and find in page.** These work on every page with no
      page code, because the browser knows the text of every node:
-     - Drag to select across nodes, double-click selects a word, Ctrl+A
-       selects everything, and Ctrl+C copies.
+     - Drag to select across nodes, double-click selects a word,
+       triple-click a paragraph, Ctrl+A selects everything, and Ctrl+C
+       copies.
+     - Shift+click and Shift with the arrows, Home or End extend a selection,
+       including from an empty one left by a plain click. Up and Down keep
+       their column across short lines and skip the gaps between blocks.
      - Ctrl+F matches case-insensitively and scrolls each match into view.
      - Positions are kept as (node handle, byte offset), so they survive
        re-layout.
@@ -225,8 +235,7 @@ contains pages written directly in assembly.
 Later ideas:
 - inline images; bidirectional text and line breaking per the Unicode algorithm (kb_text_shape provides both)
 - a history and bookmarks view
-- selection and caret movement inside inputs, and a keyboard-driven caret on pages
-- caret movement and selection in inputs (`core:text/edit`), clipboard
+- a visible, keyboard-driven caret on pages (caret browsing, F7)
 - an accessibility bridge: the semantic tree maps directly onto platform accessibility APIs
 - a pre-decoded instruction cache (W^X makes it safe)
 - a GDB remote stub hooked to `ebreak`

@@ -205,7 +205,10 @@ contains pages written directly in assembly.
      `src/field`: a caret, a selection, moves by character (keeping
      combining marks with their letter) and by word, and undo that groups a
      run of typing into one step. It has no graphics, so it is unit tested;
-     `nb` adds drawing, mouse selection and sideways scrolling.
+     `nb` adds drawing, mouse selection and sideways scrolling. Pages read
+     and place an Input's selection with `Input_Get_Selection` and
+     `Input_Set_Selection`, get a `Select` event when the user moves it, and
+     focus an Input with `Input_Focus`.
    - **Text selection and find in page.** These work on every page with no
      page code, because the browser knows the text of every node:
      - Drag to select across nodes, double-click selects a word,

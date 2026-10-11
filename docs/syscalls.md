@@ -71,6 +71,7 @@ Event :: struct {      // offset
 | `Resize` | 6 | `a` width, `b` height of the viewport in px. Sent once when the page starts and on every resize |
 | `Fetch` | 7 | `handle` = fetch stream. `a` = the server's status (200, 404, …) or a negated error code. `b` = body length. See [Fetch](#fetch-0x300) |
 | `Change` | 8 | `handle` = an Input whose text the user edited. Read it with `Node_Get_Text` |
+| `Select` | 9 | `handle` = an Input whose caret or selection the user moved. `a` = anchor, `b` = caret. See [Input selection](#input-selection) |
 
 **`Key` values** for non-character keys: `Backspace` 0x08, `Tab` 0x09,
 `Enter` 0x0D, `Escape` 0x1B, `Delete` 0x7F, then `Left` 0x10000, `Right`,
@@ -108,6 +109,9 @@ clock ahead, and the first unbounded wait with `Quit`.
 | `0x104` | `Node_Remove` | `handle` | 0. Detaches from its parent; the node stays valid |
 | `0x105` | `Root_Set` | `handle`, or 0 to clear | 0. `-INVAL` if the node has a parent |
 | `0x106` | `Node_Get_Text` | `handle, ptr, cap` | the full text length in bytes. Copies `min(length, cap)` bytes. Use it to read what the user typed into an `Input` |
+| `0x107` | `Input_Get_Selection` | `handle, ptr` | 0. Writes a 16-byte `Selection` |
+| `0x108` | `Input_Set_Selection` | `handle, anchor, caret` | 0. `-RANGE` past the end of the text, `-INVAL` inside a character |
+| `0x109` | `Input_Focus` | `handle`, or 0 | 0. Gives the Input keyboard focus; 0 takes focus off the page's Inputs. `-INVAL` for a node not in the tree under the root |
 
 `Handle_Close` on a node detaches it. Its children become detached roots and
 keep their handles.
@@ -154,6 +158,37 @@ events for editing keys, only `Text` for what was typed and `Change` after
 every edit. A page can still set the text with `Node_Set_Text`. The caret
 stays where it was if it still fits, and the user's undo history for that
 Input starts over.
+
+### Input selection
+
+A page can ask where the caret and selection are in an Input, and move
+them. Offsets are bytes into the Input's text, on character boundaries, as
+with `Node_Get_Text`.
+
+```odin
+Selection :: struct { // offset
+	anchor: i64,      // 0: where the selection started
+	caret:  i64,      // 8: the end that moves; equal to anchor when nothing is selected
+}
+```
+
+- **`Select` events** report each move the user makes: arrows, clicks,
+  drags, Ctrl+A, and typing, which moves the caret. A drag sends at most one
+  per frame. Typing sends `Text`, then `Change`, then `Select`.
+- **`Input_Get_Selection`** works on any Input. One that does not have focus
+  keeps the selection it had when it lost focus. A new Input has its caret at 0.
+- **`Input_Set_Selection`** moves the caret to `caret`, selecting from
+  `anchor`. Pass the same offset twice for a caret with no selection. It
+  sends no `Select` event. On an Input without focus, the selection takes
+  effect when the Input is focused, by the user or with `Input_Focus`;
+  otherwise focusing puts the caret at the end of the text.
+- **`Input_Focus`** moves the keyboard focus, as a click or Tab would. It
+  does not scroll the Input into view. While the user is typing in the
+  browser's address bar or find bar, the request is ignored.
+- **`Node_Set_Text`** keeps the selection where it still fits, and pulls it
+  back to the end of the new text otherwise.
+
+These syscalls fail with `-INVAL` for a node that is not an Input.
 
 ## Canvas (`0x200`)
 

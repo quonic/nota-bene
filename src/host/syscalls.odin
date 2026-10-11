@@ -228,6 +228,52 @@ syscall :: proc(p: ^Page, nr: u64, args: [6]u64) -> i64 {
 		copy(dst, n.text)
 		return i64(len(n.text))
 
+	case .Input_Get_Selection:
+		n, err := input_node(p, handle_arg(a0))
+		if err != .OK {
+			return errno(err)
+		}
+		dst, ok := guest_write(p, a1, size_of(abi.Selection))
+		if !ok {
+			return errno(.FAULT)
+		}
+		sel := abi.Selection{i64(n.anchor), i64(n.caret)}
+		copy(dst, ([^]u8)(&sel)[:size_of(abi.Selection)])
+		return 0
+
+	case .Input_Set_Selection:
+		n, err := input_node(p, handle_arg(a0))
+		if err != .OK {
+			return errno(err)
+		}
+		anchor, aerr := text_offset(n.text, a1)
+		if aerr != .OK {
+			return errno(aerr)
+		}
+		caret, cerr := text_offset(n.text, a2)
+		if cerr != .OK {
+			return errno(cerr)
+		}
+		n.anchor, n.caret = anchor, caret
+		n.selection_set = true
+		p.paint_version += 1
+		return 0
+
+	case .Input_Focus:
+		h := handle_arg(a0)
+		if a0 != 0 {
+			if _, err := input_node(p, h); err != .OK {
+				return errno(err)
+			}
+			if p.root == abi.INVALID_HANDLE || !node_is_ancestor(p, p.root, h) {
+				return errno(.INVAL) // not shown, so it could not be typed into
+			}
+		}
+		p.focus_request = h
+		p.focus_requested = true
+		p.paint_version += 1
+		return 0
+
 	case .Canvas_Clear:
 		c, err := canvas_node(p, handle_arg(a0))
 		if err != .OK {
@@ -354,6 +400,32 @@ handle_arg :: #force_inline proc "contextless" (v: u64) -> abi.Handle {
 		return abi.INVALID_HANDLE
 	}
 	return abi.Handle(u32(v))
+}
+
+@(private)
+input_node :: proc(p: ^Page, h: abi.Handle) -> (^Node, abi.Errno) {
+	n := node_get(p, h)
+	if n == nil {
+		return nil, .BADH
+	}
+	if n.kind != .Input {
+		return nil, .INVAL
+	}
+	return n, .OK
+}
+
+// A byte offset into `text` from a syscall argument: at most the text's
+// length, and on a rune boundary.
+@(private)
+text_offset :: proc(text: string, v: u64) -> (int, abi.Errno) {
+	if v > u64(len(text)) {
+		return 0, .RANGE // also catches negative offsets
+	}
+	pos := int(v)
+	if pos < len(text) && text[pos] & 0xC0 == 0x80 {
+		return 0, .INVAL
+	}
+	return pos, .OK
 }
 
 @(private)

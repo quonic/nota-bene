@@ -51,6 +51,11 @@ Page :: struct {
 
 	storage:     ^Storage, // nil: the page has no persistent storage (see page_attach_storage)
 
+	// An Input_Focus the browser has not applied yet. The request may be 0
+	// (take focus off the page's Inputs), hence the separate flag.
+	focus_request:   abi.Handle,
+	focus_requested: bool,
+
 	// Fetch (fetch.odin)
 	location:      string,                // where the page came from; see page_set_location
 	fetch_proc:    Fetch_Proc,            // nil: Fetch_Open fails with -NOSYS
@@ -196,4 +201,15 @@ page_input_edit :: proc(p: ^Page, h: abi.Handle, text: string) {
 	}
 	node_set_text(p, h, text)
 	page_push_event(p, abi.Event{kind = .Change, handle = h})
+}
+
+// Records where the user put the caret and selection in an Input, and sends
+// the page a Select event if they moved.
+page_input_select :: proc(p: ^Page, h: abi.Handle, anchor, caret: int) {
+	n := node_get(p, h)
+	if n == nil || n.kind != .Input || (n.anchor == anchor && n.caret == caret) {
+		return
+	}
+	n.anchor, n.caret = anchor, caret
+	page_push_event(p, abi.Event{kind = .Select, handle = h, a = i64(anchor), b = i64(caret)})
 }

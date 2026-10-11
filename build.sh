@@ -137,7 +137,7 @@ run_tests() {
 	build_examples
 	build_fixtures
 	local pkg
-	for pkg in vm loader host layout proto search; do
+	for pkg in vm loader host layout proto search field; do
 		log "test $pkg"
 		local defines=(-define:FIXTURES="$BUILD/tests")
 		[[ $pkg == host || $pkg == proto ]] && defines+=(-define:BUILD_DIR="$BUILD")

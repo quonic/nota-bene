@@ -23,6 +23,7 @@ Log_Level  :: abi.Log_Level
 Key        :: abi.Key
 Modifier   :: abi.Modifier
 Modifiers  :: abi.Modifiers
+Selection  :: abi.Selection
 
 INVALID_HANDLE :: abi.INVALID_HANDLE
 
@@ -148,6 +149,31 @@ get_text :: proc(h: Handle, allocator := context.allocator) -> (string, Errno) {
 	buf := make([]u8, n, allocator)
 	text, _, err2 := get_text_buf(h, buf)
 	return text, err2
+}
+
+// Where the caret and selection are in an Input, as byte offsets into its
+// text. The selection runs from `anchor` to `caret`; they are equal when
+// nothing is selected. A Select event reports each move the user makes.
+get_selection :: proc "contextless" (h: Handle) -> (anchor, caret: int, err: Errno) {
+	sel: Selection
+	r := sys(.Input_Get_Selection, uintptr(h), uintptr(&sel))
+	if r < 0 {
+		return 0, 0, to_errno(r)
+	}
+	return int(sel.anchor), int(sel.caret), .OK
+}
+
+// Moves an Input's caret to `caret`, selecting from `anchor`; pass the same
+// offset twice for a plain caret. Offsets must lie on rune boundaries.
+set_selection :: proc "contextless" (h: Handle, anchor, caret: int) -> Errno {
+	return to_errno(sys(.Input_Set_Selection, uintptr(h), uintptr(anchor), uintptr(caret)))
+}
+
+// Gives an Input the keyboard focus, or with INVALID_HANDLE takes it off the
+// page's Inputs. The Input must be in the tree under the root. The browser
+// ignores the request while the user is typing in its address or find bar.
+focus :: proc "contextless" (h: Handle) -> Errno {
+	return to_errno(sys(.Input_Focus, uintptr(h)))
 }
 
 // Canvas drawing. Colours are 0xRRGGBBAA.

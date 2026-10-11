@@ -29,6 +29,10 @@ Syscall :: enum u32 {
 	Node_Remove   = 0x104, // (handle)                   -> 0   detach from parent
 	Root_Set      = 0x105, // (handle)                   -> 0
 	Node_Get_Text = 0x106, // (handle, ptr, cap)         -> full length; copies min(length, cap) bytes
+	// An Input's selection, as byte offsets into its text. See Selection.
+	Input_Get_Selection = 0x107, // (handle, ptr)          -> 0   writes a Selection
+	Input_Set_Selection = 0x108, // (handle, anchor, caret) -> 0
+	Input_Focus         = 0x109, // (handle)               -> 0   0 takes focus off the page's Inputs
 
 	// 0x200 canvas. Colours are 0xRRGGBBAA; pixels are RGBA8, row-major.
 	Canvas_Clear      = 0x200, // (handle, rgba)             -> 0
@@ -125,6 +129,7 @@ Event_Kind :: enum u32 {
 	Resize = 6, // a = viewport width, b = viewport height, in px
 	Fetch  = 7, // handle = fetch stream, a = server status (200, 404, ...) or a negated Errno, b = body length
 	Change = 8, // handle = Input node whose text the user edited; read it with Node_Get_Text
+	Select = 9, // handle = Input node whose caret or selection the user moved, a = anchor, b = caret
 }
 
 // Event.a for Key events. Printable keys use their (unshifted, lowercase)
@@ -165,6 +170,17 @@ Event :: struct {
 }
 
 #assert(size_of(Event) == 32)
+
+// An Input's selection, written to guest memory by Input_Get_Selection.
+// Offsets are bytes into the text, on rune boundaries. The selection runs
+// from `anchor` (where it started) to `caret` (the end that moves); they are
+// equal when nothing is selected.
+Selection :: struct {
+	anchor: i64,
+	caret:  i64,
+}
+
+#assert(size_of(Selection) == 16)
 
 // Limits a page can rely on.
 MAX_LOG_LEN    :: 16 * 1024

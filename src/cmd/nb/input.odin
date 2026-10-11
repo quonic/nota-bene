@@ -48,7 +48,13 @@ set_focus :: proc(b: ^Browser, h: abi.Handle) {
 	b.input.scroll_x = 0
 	if n := host.node_get(&b.page, h); n != nil && n.kind == .Input {
 		field.set_text(&b.input, n.text)
-		field.move(&b.input, .End)
+		if n.selection_set {
+			// The page placed the selection before the user got here.
+			n.selection_set = false
+			field.select_range(&b.input, n.anchor, n.caret)
+		} else {
+			field.move(&b.input, .End)
+		}
 	}
 	update_text_input(b)
 	b.dirty = true

@@ -131,6 +131,38 @@ commit_input :: proc(b: ^Browser) {
 	host.page_input_edit(&b.page, b.focus, field.text(&b.input))
 }
 
+// Applies the page's focus request, then keeps the focused Input's
+// selection and its node's in step: a selection the page placed is applied,
+// and one the user moved is reported to the page with a Select event.
+sync_selection :: proc(b: ^Browser) {
+	if b.cur == nil || !b.loaded {
+		return
+	}
+	if b.page.focus_requested {
+		b.page.focus_requested = false
+		h := b.page.focus_request
+		// The address and find bars keep their focus: the request is dropped,
+		// so the caret never jumps away from what the user is typing there.
+		n := host.node_get(&b.page, h)
+		if !b.address_focus && !b.find_focus && (h == abi.INVALID_HANDLE || (n != nil && n.kind == .Input)) {
+			set_focus(b, h)
+			reset_caret_blink(b)
+		}
+	}
+	if focused_field(b) != .Input {
+		return
+	}
+	n := host.node_get(&b.page, b.focus)
+	if n.selection_set {
+		n.selection_set = false
+		field.select_range(&b.input, n.anchor, n.caret)
+		reset_caret_blink(b)
+		b.dirty = true
+	} else if b.input.anchor != n.anchor || b.input.caret != n.caret {
+		host.page_input_select(&b.page, b.focus, b.input.anchor, b.input.caret)
+	}
+}
+
 // The byte offset in field `t` nearest window x coordinate `x`.
 field_offset_at :: proc(b: ^Browser, t: Field_Target, x: f32) -> (offset: int, ok: bool) {
 	f, key, font, left := field_geometry(b, t) or_return

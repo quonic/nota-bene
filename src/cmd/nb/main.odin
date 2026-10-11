@@ -161,6 +161,7 @@ run :: proc(opts: Options) -> int {
 
 	for !b.quit {
 		run_tabs(&b)
+		sync_selection(&b) // a selection the page placed shows in this frame
 		update_layout(&b)
 		if focused_field(&b) != .None && caret_visible(&b) != b.caret_shown {
 			b.dirty = true
@@ -219,6 +220,7 @@ run :: proc(opts: Options) -> int {
 				handle_event(&b, ev)
 			}
 		}
+		sync_selection(&b) // one Select per frame, however far the user dragged
 	}
 	return 0
 }

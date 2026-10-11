@@ -98,6 +98,14 @@ set_caret :: proc(f: ^Field, offset: int, extend := false) {
 	f.last = .None
 }
 
+// Selects from `anchor` to `caret`, each clamped into the text and onto a
+// rune boundary.
+select_range :: proc(f: ^Field, anchor, caret: int) {
+	f.anchor = snap(text(f), anchor)
+	f.caret = snap(text(f), caret)
+	f.last = .None
+}
+
 // Moves the caret. Without `extend`, Left and Right first collapse a
 // selection to its near side.
 move :: proc(f: ^Field, m: Move, extend := false) {

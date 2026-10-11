@@ -130,7 +130,8 @@ cooperation. A `Canvas` node will give pages raw drawing where they need it.
 
 `nb` keeps the layout until `Page.tree_version` changes or the window width
 changes. It only repaints when something changed, including canvas pixels
-(`Page.paint_version`). It renders in physical pixels, so text stays sharp on
+(`Page.paint_version`), or when the caret of the focused field blinks; typing
+or clicking restarts the blink with the caret on. It renders in physical pixels, so text stays sharp on
 high-DPI screens. It runs the page for at most 8 ms between frames and stops
 a page that runs 5 s without waiting for an event.
 

@@ -115,6 +115,12 @@ Browser :: struct {
 	find_focus: bool,
 
 	field_drag: Field_Target, // the field a mouse drag is selecting in
+
+	// Caret blinking (fields.odin)
+	caret_since:    time.Tick, // when the blink cycle last restarted
+	caret_shown:    bool,      // whether the last frame drew the caret
+	window_focused: bool,
+	no_blink:       bool, // scripted runs keep the caret solid, so screenshots are repeatable
 }
 
 // Logical (layout) size of the content area, which sits between the

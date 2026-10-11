@@ -1,6 +1,7 @@
 package main
 
 import "core:strings"
+import "core:time"
 
 import sdl "vendor:sdl3"
 
@@ -203,8 +204,43 @@ draw_field :: proc(b: ^Browser, key: u64, s: string, font: layout.Font, color: l
 		}
 	}
 	draw_text(b, key, s, font, 0, color, x, y)
-	if f != nil {
+	if f != nil && b.caret_shown {
 		_, th := measure_text(&b.fonts, "", font, 0)
 		fill_rect(b, {x + caret, y + 2, 1.5, th - 4}, color)
 	}
+}
+
+// How long the caret stays on, then off.
+CARET_BLINK :: 530 * time.Millisecond
+
+// Restarts the blink cycle, so the caret is solid right after the user types,
+// clicks or moves it.
+reset_caret_blink :: proc(b: ^Browser) {
+	b.caret_since = time.tick_now()
+	if !b.caret_shown {
+		b.dirty = true
+	}
+}
+
+// Whether the caret is in the on half of its blink cycle. An unfocused window
+// shows no caret.
+caret_visible :: proc(b: ^Browser) -> bool {
+	if b.no_blink {
+		return true
+	}
+	if !b.window_focused {
+		return false
+	}
+	return (time.tick_since(b.caret_since) / CARET_BLINK) % 2 == 0
+}
+
+// Milliseconds until the caret next turns on or off, or -1 if it does not
+// blink right now.
+caret_next_toggle_ms :: proc(b: ^Browser) -> i32 {
+	if b.no_blink || !b.window_focused || focused_field(b) == .None {
+		return -1
+	}
+	elapsed := time.tick_since(b.caret_since)
+	left := CARET_BLINK - elapsed % CARET_BLINK
+	return i32((left + time.Millisecond - 1) / time.Millisecond)
 }

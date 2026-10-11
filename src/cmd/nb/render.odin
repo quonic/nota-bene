@@ -121,6 +121,7 @@ render :: proc(b: ^Browser) {
 	set_color(b, page_color)
 	sdl.RenderClear(b.renderer)
 
+	b.caret_shown = caret_visible(b)
 	content := content_clip(b)
 	sdl.SetRenderClipRect(b.renderer, &content)
 	if b.loaded && b.lay_valid {

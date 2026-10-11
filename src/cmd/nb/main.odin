@@ -99,6 +99,8 @@ run :: proc(opts: Options) -> int {
 
 	b: Browser
 	b.theme = layout.DEFAULT_THEME
+	b.window_focused = true
+	b.caret_since = time.tick_now()
 	b.mem_cfg = opts.mem
 	if !sdl.CreateWindowAndRenderer(
 		"Nota Bene",
@@ -155,10 +157,14 @@ run :: proc(opts: Options) -> int {
 	// waiting for events (or has stopped) and has been laid out.
 	next_action := 0
 	automating := len(opts.actions) > 0 || opts.screenshot != ""
+	b.no_blink = automating
 
 	for !b.quit {
 		run_tabs(&b)
 		update_layout(&b)
+		if focused_field(&b) != .None && caret_visible(&b) != b.caret_shown {
+			b.dirty = true
+		}
 		if b.dirty || (b.loaded && b.painted != b.page.paint_version) {
 			render(&b)
 		}
@@ -232,10 +238,9 @@ settled :: proc(b: ^Browser) -> bool {
 	return b.page.state != .Running && b.lay_valid && b.lay_version == b.page.tree_version
 }
 
-// How long to block waiting for window events.
 // How long to block waiting for window events: not at all while any page is
 // running, briefly while a fetch is in flight, until the nearest page timer
-// otherwise.
+// or caret blink otherwise.
 wait_timeout :: proc(b: ^Browser, automating: bool) -> i32 {
 	if automating {
 		return 0
@@ -243,6 +248,9 @@ wait_timeout :: proc(b: ^Browser, automating: bool) -> i32 {
 	timeout: i32 = -1
 	if len(b.fetches) > 0 {
 		timeout = 15 // pages' own requests: their answers arrive without a window event
+	}
+	if ms := caret_next_toggle_ms(b); ms >= 0 {
+		timeout = ms if timeout < 0 else min(timeout, ms)
 	}
 	for t in b.tabs {
 		switch {
@@ -284,6 +292,12 @@ handle_event :: proc(b: ^Browser, ev: sdl.Event) {
 		b.dirty = true
 	case .WINDOW_EXPOSED:
 		b.dirty = true
+	case .WINDOW_FOCUS_GAINED:
+		b.window_focused = true
+		reset_caret_blink(b)
+	case .WINDOW_FOCUS_LOST:
+		b.window_focused = false
+		b.dirty = true
 	case .MOUSE_MOTION:
 		hover(b, ev.motion.x, ev.motion.y)
 		if .LEFT in ev.motion.state {
@@ -294,6 +308,7 @@ handle_event :: proc(b: ^Browser, ev: sdl.Event) {
 			end_selection(b)
 		}
 	case .MOUSE_BUTTON_DOWN:
+		reset_caret_blink(b)
 		switch ev.button.button {
 		case 1:
 			click(
@@ -309,8 +324,12 @@ handle_event :: proc(b: ^Browser, ev: sdl.Event) {
 	case .MOUSE_WHEEL:
 		scroll_by(b, -ev.wheel.y * SCROLL_STEP)
 	case .KEY_DOWN, .KEY_UP:
+		if ev.type == .KEY_DOWN {
+			reset_caret_blink(b)
+		}
 		handle_key(b, ev.key)
 	case .TEXT_INPUT:
+		reset_caret_blink(b)
 		handle_text(b, string(ev.text.text))
 	}
 }

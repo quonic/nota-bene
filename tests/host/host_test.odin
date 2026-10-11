@@ -290,6 +290,58 @@ test_input_edit :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_input_select :: proc(t: ^testing.T) {
+	p: host.Page
+	p.allocator = context.allocator
+	host.handle_table_init(&p.handles, 100)
+	defer host.page_destroy(&p)
+
+	input, _ := host.node_create(&p, .Input)
+	box, _ := host.node_create(&p, .Box)
+	host.node_set_text(&p, input, "héllo")
+	host.page_input_select(&p, input, 1, 6)
+	host.page_input_select(&p, input, 1, 6) // unchanged: no second event
+	testing.expect_value(t, len(p.events), 1)
+	if len(p.events) == 1 {
+		testing.expect_value(t, p.events[0].kind, abi.Event_Kind.Select)
+		testing.expect_value(t, p.events[0].handle, input)
+		testing.expect_value(t, p.events[0].a, 1)
+		testing.expect_value(t, p.events[0].b, 6)
+	}
+	host.page_input_select(&p, box, 0, 0) // only Inputs have a selection
+	testing.expect_value(t, len(p.events), 1)
+
+	// New text keeps the selection where it fits, on a rune boundary.
+	host.node_set_text(&p, input, "hé")
+	n := host.node_get(&p, input)
+	testing.expect_value(t, n.anchor, 1)
+	testing.expect_value(t, n.caret, 3)
+	host.page_input_select(&p, input, 1, 2)
+	host.node_set_text(&p, input, "hé") // inside é: back to its start
+	testing.expect_value(t, n.caret, 1)
+}
+
+@(test)
+test_selection_syscalls :: proc(t: ^testing.T) {
+	p: host.Page
+	if !load_page(t, &p, fmt.tprintf("%s/selection.c.elf", FIXTURES)) {
+		return
+	}
+	defer host.page_destroy(&p)
+	run_page(&p)
+	expect_exit(t, &p, 0)
+
+	n := host.node_get(&p, find_node(&p, .Input))
+	if !testing.expect(t, n != nil) {
+		return
+	}
+	testing.expect(t, n.selection_set) // waiting for the browser to apply it
+	testing.expect_value(t, len(p.events), 0) // the page's own moves send no Select
+	testing.expect(t, p.focus_requested)
+	testing.expect_value(t, p.focus_request, find_node(&p, .Input)) // the last request wins
+}
+
+@(test)
 test_storage :: proc(t: ^testing.T) {
 	path := fmt.tprintf("%s/test_storage.cbor", BUILD_DIR)
 	os.remove(path)

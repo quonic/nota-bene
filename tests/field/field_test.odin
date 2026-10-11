@@ -114,3 +114,17 @@ test_set_text :: proc(t: ^testing.T) {
 	field.set_caret(&f, 1) // inside ü: back to its start
 	testing.expect_value(t, f.caret, 0)
 }
+
+@(test)
+test_select_range :: proc(t: ^testing.T) {
+	f: field.Field
+	defer field.destroy(&f)
+	field.set_text(&f, "aüb")
+	field.select_range(&f, 4, 0) // backwards is fine
+	testing.expect_value(t, f.anchor, 4)
+	testing.expect_value(t, f.caret, 0)
+	testing.expect_value(t, field.selected_text(&f), "aüb")
+	field.select_range(&f, 2, 9) // inside ü, and past the end
+	testing.expect_value(t, f.anchor, 1)
+	testing.expect_value(t, f.caret, 4)
+}

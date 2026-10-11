@@ -1,0 +1,6 @@
+abi 1
+title Fixture
+fetch nb://a.example
+fetch nb://b.example
+storage 2M
+colour blue

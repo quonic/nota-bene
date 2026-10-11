@@ -1,0 +1,4 @@
+# Page manifest: see docs/syscalls.md
+abi 1
+title Notes
+storage 64K

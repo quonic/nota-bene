@@ -1,0 +1,4 @@
+# Page manifest: see docs/syscalls.md
+abi 1
+title Feed
+fetch /

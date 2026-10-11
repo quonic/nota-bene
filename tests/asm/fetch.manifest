@@ -1,0 +1,4 @@
+abi 1
+fetch nb://allowed.example/data
+fetch /app
+fetch nb://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@keyed.example

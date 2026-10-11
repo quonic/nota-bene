@@ -1,0 +1,5 @@
+# Read by the Feed example page. One item per line: title | text.
+Pages fetch data | This list came from feed.txt on the page's own server, not from the page's code.
+Scoped by the manifest | The page can only reach the servers its manifest names. "fetch /" means its own server.
+Same key, same server | A relative fetch must reach the server key the page was loaded from.
+Edit me | Change build/site/feed.txt while nbd runs, then press Refresh.

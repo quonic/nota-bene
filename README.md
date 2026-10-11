@@ -1,6 +1,8 @@
 # Nota Bene
 
-This project is an experiment in building a new kind of web browser from the ground up. Pages are compiled programs that run in a sandboxed virtual machine (VM), not documents with embedded scripts. There is no HTML and no JavaScript.
+Nota Bene is an experimental implementation of a web browser with a completely new approach to web pages.
+
+We don't do HTML, CSS, nor JS. Just small, fast and compiled pages.
 
 - **Pages are RISC-V programs.** The VM runs standard RV64GC code, so pages can be written in Odin (with the SDK in `sdk/nb`) or in any language with an RV64 compiler.
 - **Syscalls follow the Linux convention.** A page calls the browser with `ecall`, putting the number in `a7` and the arguments in `a0`–`a5`. Everything the browser hands out is an opaque capability handle; the page never sees a host pointer.
@@ -95,6 +97,4 @@ box direction="column" gap="12"
 
 ## Default Configuration
 
-Port: 4040. This is the port a server listens on for incoming connections. All connections are encrypted.
-
-The original choice was port 404, and a server can still use it with `nbd --port 404`. Ports below 1024 need extra privileges on Linux: either run as root or grant the capability with `sudo setcap cap_net_bind_service=+ep ./nbd`.
+Port: 4040

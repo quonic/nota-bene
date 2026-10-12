@@ -57,6 +57,7 @@ Result :: struct {
 
 VIEWPORT_MARGIN :: 16
 
+// The size of an Image with no picture yet.
 IMAGE_PLACEHOLDER :: [2]f32{120, 80}
 
 // How many lines tall a Text_Area is without a Height attribute.
@@ -179,9 +180,7 @@ layout_node :: proc(ctx: ^Context, h: abi.Handle, parent: int, x, y, avail: f32,
 		cy += f32(ch)
 
 	case .Image:
-		size := IMAGE_PLACEHOLDER
-		if fw, ok := st.width.?; ok { size.x = fw }
-		if fh, ok := st.height.?; ok { size.y = fh }
+		size := image_size(n, avail - 2 * pad)
 		outer_w = size.x + 2 * pad
 		text_rect = {cx, cy, size.x, size.y}
 		content_w = size.x
@@ -271,6 +270,38 @@ layout_node :: proc(ctx: ^Context, h: abi.Handle, parent: int, x, y, avail: f32,
 	item.text = n.text
 	item.wrap = wrap
 	return w, hgt
+}
+
+// The size an Image is drawn at: its picture's size in pixels (or the
+// placeholder's), unless Width or Height says otherwise. With only one of
+// them set, the other follows the aspect ratio. An image wider than `avail`
+// is scaled down to fit.
+image_size :: proc(n: ^host.Node, avail: f32) -> [2]f32 {
+	size := IMAGE_PLACEHOLDER
+	if n.bitmap.pixels != nil {
+		size = {f32(n.bitmap.width), f32(n.bitmap.height)}
+	}
+	px :: proc(n: ^host.Node, attr: abi.Attr) -> (f32, bool) {
+		s, ok := n.attrs[attr]
+		if !ok {
+			return 0, false
+		}
+		return parse_px(s)
+	}
+	w, has_w := px(n, .Width)
+	h, has_h := px(n, .Height)
+	switch {
+	case has_w && has_h:
+		size = {w, h}
+	case has_w:
+		size = {w, size.y * w / size.x}
+	case has_h:
+		size = {size.x * h / size.y, h}
+	}
+	if size.x > avail {
+		size = {max(avail, 0), size.y * max(avail, 0) / size.x}
+	}
+	return size
 }
 
 @(private)

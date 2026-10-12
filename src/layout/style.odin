@@ -187,7 +187,7 @@ style_for :: proc(n: ^host.Node, theme: Theme) -> Style {
 
 is_inline_kind :: proc "contextless" (k: abi.Node_Kind) -> bool {
 	#partial switch k {
-	case .Text, .Link, .Emphasis, .Strong, .Code:
+	case .Text, .Link, .Emphasis, .Strong, .Code, .Image:
 		return true
 	}
 	return false

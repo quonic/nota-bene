@@ -18,6 +18,7 @@ Node :: struct {
 	text:        string,
 	attrs:       map[abi.Attr]string,
 	canvas:      Canvas, // Canvas nodes only
+	bitmap:      Bitmap, // Image nodes only (bitmap.odin)
 
 	// Input nodes only: the selection as byte offsets into `text` (see
 	// abi.Selection). `selection_set` means the page placed it with
@@ -181,6 +182,7 @@ node_free_storage :: proc(p: ^Page, n: ^Node) {
 	}
 	delete(n.attrs)
 	delete(n.canvas.pixels, p.allocator)
+	bitmap_free(p, n)
 }
 
 // Writes the tree rooted at the page root as indented text, e.g.
@@ -214,6 +216,9 @@ dump_node :: proc(p: ^Page, sb: ^strings.Builder, h: abi.Handle, depth: int) {
 	}
 	if len(n.text) > 0 {
 		fmt.sbprintf(sb, " %q", n.text)
+	}
+	if n.bitmap.pixels != nil {
+		fmt.sbprintf(sb, " %dx%d", n.bitmap.width, n.bitmap.height)
 	}
 	strings.write_byte(sb, '\n')
 	for c := n.first_child; c != abi.INVALID_HANDLE; {

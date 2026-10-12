@@ -274,6 +274,16 @@ syscall :: proc(p: ^Page, nr: u64, args: [6]u64) -> i64 {
 		p.paint_version += 1
 		return 0
 
+	case .Image_Set_Data:
+		if a2 > abi.MAX_IMAGE_BYTES {
+			return errno(.RANGE)
+		}
+		data, ok := guest_read(p, a1, a2)
+		if !ok {
+			return errno(.FAULT)
+		}
+		return errno(node_set_image(p, handle_arg(a0), data))
+
 	case .Canvas_Clear:
 		c, err := canvas_node(p, handle_arg(a0))
 		if err != .OK {

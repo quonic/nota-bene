@@ -4,13 +4,16 @@ import "../abi"
 import "../host"
 
 // Inline formatting: a Paragraph, Heading or List_Item whose children are
-// all inline (Text, Link, Emphasis, Strong, Code) flows its own text and
-// theirs as one paragraph, wrapping at spaces across style changes.
+// all inline (Text, Link, Emphasis, Strong, Code, Image) flows its own text
+// and theirs as one paragraph, wrapping at spaces across style changes. An
+// Image is one unbreakable box on the line, like a word.
+//
 //
 // The result is a list of fragments: a fragment is a contiguous slice of
 // one node's text on one line, in one style. Every inline node still gets an
 // Item (for hit testing, links, selection and find); its fragments are
-// items[i].frag_first ..< frag_first + frag_count in Result.fragments.
+// items[i].frag_first ..< frag_first + frag_count in Result.fragments. An
+// Image's single fragment is its picture's box, with an empty byte range.
 
 Fragment :: struct {
 	item:       int, // the Item whose node owns the text
@@ -51,6 +54,7 @@ Run :: struct {
 	item:  int,
 	text:  string,
 	style: Style,
+	image: ^host.Node, // set for an Image, which has no text
 }
 
 @(private)
@@ -72,13 +76,13 @@ layout_inline :: proc(ctx: ^Context, n: ^host.Node, idx: int, x, y, avail: f32) 
 	runs := make([dynamic]Run, context.temp_allocator)
 	container_style := ctx.out.items[idx].style
 	if len(n.text) > 0 {
-		append(&runs, Run{idx, n.text, container_style})
+		append(&runs, Run{idx, n.text, container_style, nil})
 	}
 	collect_runs(ctx, n, idx, container_style, &runs)
 
 	tokens := make([dynamic]Token, context.temp_allocator)
 	for run, ri in runs {
-		tokenize(ctx, ri, run, &tokens)
+		tokenize(ctx, ri, run, avail, &tokens)
 	}
 
 	_, base_h := ctx.m.measure(ctx.m.data, "", container_style.font, 0)
@@ -176,16 +180,25 @@ collect_runs :: proc(ctx: ^Context, n: ^host.Node, parent_idx: int, parent_style
 			parent      = parent_idx,
 			inline_root = ctx.out.items[parent_idx].inline_root if ctx.out.items[parent_idx].inline_root >= 0 else parent_idx,
 		})
-		if len(child.text) > 0 {
-			append(runs, Run{ci, child.text, st})
+		if child.kind == .Image {
+			append(runs, Run{ci, "", st, child}) // its children, if any, are not shown
+		} else {
+			if len(child.text) > 0 {
+				append(runs, Run{ci, child.text, st, nil})
+			}
+			collect_runs(ctx, child, ci, st, runs)
 		}
-		collect_runs(ctx, child, ci, st, runs)
 		c = child.next
 	}
 }
 
 @(private)
-tokenize :: proc(ctx: ^Context, ri: int, run: Run, out: ^[dynamic]Token) {
+tokenize :: proc(ctx: ^Context, ri: int, run: Run, avail: f32, out: ^[dynamic]Token) {
+	if run.image != nil {
+		size := image_size(run.image, avail)
+		append(out, Token{run = ri, w = size.x, h = size.y, kind = .Word})
+		return
+	}
 	text := run.text
 	for i := 0; i < len(text); {
 		c := text[i]

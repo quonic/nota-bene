@@ -51,6 +51,8 @@ Page :: struct {
 
 	storage:     ^Storage, // nil: the page has no persistent storage (see page_attach_storage)
 
+	bitmap_bytes: int, // decoded Image pixels held, against abi.MAX_IMAGE_TOTAL
+
 	// An Input_Focus the browser has not applied yet. The request may be 0
 	// (take focus off the page's Inputs), hence the separate flag.
 	focus_request:   abi.Handle,

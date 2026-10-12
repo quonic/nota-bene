@@ -7,11 +7,11 @@ which both the browser and the SDK import.
 
 This follows the Linux RISC-V convention:
 
-| Register | Use |
-|---|---|
-| `a7` | syscall number |
-| `a0` … `a5` | arguments |
-| `a0` | result: `>= 0` on success, `-errno` on failure |
+| Register    | Use                                            |
+| ----------- | ---------------------------------------------- |
+| `a7`        | syscall number                                 |
+| `a0` … `a5` | arguments                                      |
+| `a0`        | result: `>= 0` on success, `-errno` on failure |
 
 All other registers are preserved. Strings and buffers are always passed as
 `(pointer, length)` pairs. Strings must be valid UTF-8. The browser checks
@@ -23,55 +23,55 @@ return `-NOSYS`, so a page can probe for newer features.
 
 ## Errors
 
-| Value | Name | Meaning |
-|---|---|---|
-| 1 | `PERM` | not allowed by the manifest or browser policy |
-| 2 | `INVAL` | bad argument |
-| 3 | `FAULT` | buffer outside guest memory or lacking permission |
-| 4 | `BADH` | handle is invalid, closed, or the wrong kind |
-| 5 | `NOSYS` | unknown syscall |
-| 6 | `NOMEM` | out of guest memory or quota |
-| 7 | `AGAIN` | try again later |
-| 8 | `RANGE` | length or count over a limit |
-| 9 | `TIMEDOUT` | |
-| 10 | `NOENT` | no such storage key |
-| 11 | `NOSPC` | the write would exceed the storage quota |
-| 12 | `NET` | the server could not be reached, or did not prove its identity |
+| Value | Name       | Meaning                                                        |
+| ----- | ---------- | -------------------------------------------------------------- |
+| 1     | `PERM`     | not allowed by the manifest or browser policy                  |
+| 2     | `INVAL`    | bad argument                                                   |
+| 3     | `FAULT`    | buffer outside guest memory or lacking permission              |
+| 4     | `BADH`     | handle is invalid, closed, or the wrong kind                   |
+| 5     | `NOSYS`    | unknown syscall                                                |
+| 6     | `NOMEM`    | out of guest memory or quota                                   |
+| 7     | `AGAIN`    | try again later                                                |
+| 8     | `RANGE`    | length or count over a limit                                   |
+| 9     | `TIMEDOUT` |                                                                |
+| 10    | `NOENT`    | no such storage key                                            |
+| 11    | `NOSPC`    | the write would exceed the storage quota                       |
+| 12    | `NET`      | the server could not be reached, or did not prove its identity |
 
 ## Core (`0x000`)
 
-| Nr | Name | Arguments | Returns |
-|---|---|---|---|
-| `0x000` | `Exit` | `code` (i32) | does not return |
-| `0x001` | `Debug_Log` | `ptr, len, level` (0 info, 1 warn, 2 error) | 0. `len` ≤ 16 KiB |
-| `0x002` | `Abi_Version` | | `1` |
-| `0x003` | `Mem_Grow` | `delta` bytes (rounded up to 4 KiB) | previous break. `-NOMEM` if the heap would reach the stack guard. `-INVAL` if `delta < 0` |
-| `0x004` | `Time_Now` | | monotonic ns since page start, **1 ms granularity** |
-| `0x005` | `Random` | `ptr, len` (≤ 64 KiB) | `len`. Cryptographically secure |
-| `0x006` | `Wait_Event` | `event_ptr, timeout_ms` (-1 forever, 0 poll) | 1 if an event was written, 0 on timeout |
-| `0x007` | `Handle_Close` | `handle` | 0 |
+| Nr      | Name           | Arguments                                    | Returns                                                                                   |
+| ------- | -------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `0x000` | `Exit`         | `code` (i32)                                 | does not return                                                                           |
+| `0x001` | `Debug_Log`    | `ptr, len, level` (0 info, 1 warn, 2 error)  | 0. `len` ≤ 16 KiB                                                                         |
+| `0x002` | `Abi_Version`  |                                              | `1`                                                                                       |
+| `0x003` | `Mem_Grow`     | `delta` bytes (rounded up to 4 KiB)          | previous break. `-NOMEM` if the heap would reach the stack guard. `-INVAL` if `delta < 0` |
+| `0x004` | `Time_Now`     |                                              | monotonic ns since page start, **1 ms granularity**                                       |
+| `0x005` | `Random`       | `ptr, len` (≤ 64 KiB)                        | `len`. Cryptographically secure                                                           |
+| `0x006` | `Wait_Event`   | `event_ptr, timeout_ms` (-1 forever, 0 poll) | 1 if an event was written, 0 on timeout                                                   |
+| `0x007` | `Handle_Close` | `handle`                                     | 0                                                                                         |
 
 `Wait_Event` writes a 32-byte `Event`:
 
 ```odin
 Event :: struct {      // offset
-	kind:   Event_Kind, // 0   u32
-	handle: Handle,     // 4   u32: the node or stream the event concerns
-	a, b, c: i64,       // 8, 16, 24: kind-specific
+    kind:   Event_Kind, // 0   u32
+    handle: Handle,     // 4   u32: the node or stream the event concerns
+    a, b, c: i64,       // 8, 16, 24: kind-specific
 }
 ```
 
-| Kind | Value | Fields |
-|---|---|---|
-| `Quit` | 1 | The page is closing. Clean up and return from `main` or `Exit`. |
-| `Timer` | 2 | |
-| `Click` | 3 | `handle` = the nearest Button, Link, Input, Text_Area or Canvas under the pointer (else the deepest node). `a`, `b` = position relative to the node (to the pixel grid, for a Canvas). `c` = `Modifiers` |
-| `Key` | 4 | `handle` = focused Input (or Text_Area) or 0. `a` = `Key` value or the key's lowercase code point. `b` = `Modifiers`. `c` = 1 down / 0 up |
-| `Text` | 5 | `handle` = focused Input (or Text_Area) or 0. `a` = a typed Unicode code point |
-| `Resize` | 6 | `a` width, `b` height of the viewport in px. Sent once when the page starts and on every resize |
-| `Fetch` | 7 | `handle` = fetch stream. `a` = the server's status (200, 404, …) or a negated error code. `b` = body length. See [Fetch](#fetch-0x300) |
-| `Change` | 8 | `handle` = an Input or Text_Area whose text the user edited. Read it with `Node_Get_Text` |
-| `Select` | 9 | `handle` = an Input whose caret or selection the user moved. `a` = anchor, `b` = caret. See [Input selection](#input-selection) |
+| Kind     | Value | Fields                                                                                                                                                                                                   |
+| -------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Quit`   | 1     | The page is closing. Clean up and return from `main` or `Exit`.                                                                                                                                          |
+| `Timer`  | 2     |                                                                                                                                                                                                          |
+| `Click`  | 3     | `handle` = the nearest Button, Link, Input, Text_Area or Canvas under the pointer (else the deepest node). `a`, `b` = position relative to the node (to the pixel grid, for a Canvas). `c` = `Modifiers` |
+| `Key`    | 4     | `handle` = focused Input (or Text_Area) or 0. `a` = `Key` value or the key's lowercase code point. `b` = `Modifiers`. `c` = 1 down / 0 up                                                                |
+| `Text`   | 5     | `handle` = focused Input (or Text_Area) or 0. `a` = a typed Unicode code point                                                                                                                           |
+| `Resize` | 6     | `a` width, `b` height of the viewport in px. Sent once when the page starts and on every resize                                                                                                          |
+| `Fetch`  | 7     | `handle` = fetch stream. `a` = the server's status (200, 404, …) or a negated error code. `b` = body length. See [Fetch](#fetch-0x300)                                                                   |
+| `Change` | 8     | `handle` = an Input or Text_Area whose text the user edited. Read it with `Node_Get_Text`                                                                                                                |
+| `Select` | 9     | `handle` = an Input whose caret or selection the user moved. `a` = anchor, `b` = caret. See [Input selection](#input-selection)                                                                          |
 
 **`Key` values** for non-character keys: `Backspace` 0x08, `Tab` 0x09,
 `Enter` 0x0D, `Escape` 0x1B, `Delete` 0x7F, then `Left` 0x10000, `Right`,
@@ -102,18 +102,18 @@ clock ahead, and the first unbounded wait with `Quit`.
 
 ## View tree (`0x100`)
 
-| Nr | Name | Arguments | Returns |
-|---|---|---|---|
-| `0x100` | `Node_Create` | `kind` | handle. `-RANGE` past 100 000 handles |
-| `0x101` | `Node_Set_Text` | `handle, ptr, len` (≤ 1 MiB) | 0 |
-| `0x102` | `Node_Set_Attr` | `handle, attr, ptr, len` (≤ 64 KiB). An empty value removes the attribute | 0 |
-| `0x103` | `Node_Append` | `parent, child` | 0. Moves `child` if it already has a parent. `-INVAL` for cycles or appending the root |
-| `0x104` | `Node_Remove` | `handle` | 0. Detaches from its parent; the node stays valid |
-| `0x105` | `Root_Set` | `handle`, or 0 to clear | 0. `-INVAL` if the node has a parent |
-| `0x106` | `Node_Get_Text` | `handle, ptr, cap` | the full text length in bytes. Copies `min(length, cap)` bytes. Use it to read what the user typed into an `Input` |
-| `0x107` | `Input_Get_Selection` | `handle, ptr` | 0. Writes a 16-byte `Selection` |
-| `0x108` | `Input_Set_Selection` | `handle, anchor, caret` | 0. `-RANGE` past the end of the text, `-INVAL` inside a character |
-| `0x109` | `Input_Focus` | `handle`, or 0 | 0. Gives the Input keyboard focus; 0 takes focus off the page's Inputs. `-INVAL` for a node not in the tree under the root |
+| Nr      | Name                  | Arguments                                                                 | Returns                                                                                                                    |
+| ------- | --------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `0x100` | `Node_Create`         | `kind`                                                                    | handle. `-RANGE` past 100 000 handles                                                                                      |
+| `0x101` | `Node_Set_Text`       | `handle, ptr, len` (≤ 1 MiB)                                              | 0                                                                                                                          |
+| `0x102` | `Node_Set_Attr`       | `handle, attr, ptr, len` (≤ 64 KiB). An empty value removes the attribute | 0                                                                                                                          |
+| `0x103` | `Node_Append`         | `parent, child`                                                           | 0. Moves `child` if it already has a parent. `-INVAL` for cycles or appending the root                                     |
+| `0x104` | `Node_Remove`         | `handle`                                                                  | 0. Detaches from its parent; the node stays valid                                                                          |
+| `0x105` | `Root_Set`            | `handle`, or 0 to clear                                                   | 0. `-INVAL` if the node has a parent                                                                                       |
+| `0x106` | `Node_Get_Text`       | `handle, ptr, cap`                                                        | the full text length in bytes. Copies `min(length, cap)` bytes. Use it to read what the user typed into an `Input`         |
+| `0x107` | `Input_Get_Selection` | `handle, ptr`                                                             | 0. Writes a 16-byte `Selection`                                                                                            |
+| `0x108` | `Input_Set_Selection` | `handle, anchor, caret`                                                   | 0. `-RANGE` past the end of the text, `-INVAL` inside a character                                                          |
+| `0x109` | `Input_Focus`         | `handle`, or 0                                                            | 0. Gives the Input keyboard focus; 0 takes focus off the page's Inputs. `-INVAL` for a node not in the tree under the root |
 
 `Handle_Close` on a node detaches it. Its children become detached roots and
 keep their handles.
@@ -123,7 +123,7 @@ keep their handles.
 11 `Emphasis`, 12 `Strong`, 13 `Code`, 14 `Text_Area`.
 
 **Inline text.** A `Paragraph`, `Heading` or `List_Item` whose children are
-all *inline* (`Text`, `Link`, `Emphasis`, `Strong`, `Code`, nested to any
+all _inline_ (`Text`, `Link`, `Emphasis`, `Strong`, `Code`, nested to any
 depth) flows its own text and its children's as one wrapped paragraph:
 
 ```odin
@@ -182,8 +182,8 @@ character.
 
 ```odin
 Selection :: struct { // offset
-	anchor: i64,      // 0: where the selection started
-	caret:  i64,      // 8: the end that moves; equal to anchor when nothing is selected
+    anchor: i64,      // 0: where the selection started
+    caret:  i64,      // 8: the end that moves; equal to anchor when nothing is selected
 }
 ```
 
@@ -212,11 +212,11 @@ A `Canvas` node owns an RGBA8 pixel buffer sized by its `Width` and `Height`
 attributes (default 300×150, at most 4096×4096). Changing either attribute
 resizes the buffer and clears it to transparent. Colours are `0xRRGGBBAA`.
 
-| Nr | Name | Arguments | Returns |
-|---|---|---|---|
-| `0x200` | `Canvas_Clear` | `handle, rgba` | 0 |
-| `0x201` | `Canvas_Fill_Rect` | `handle, x, y, w, h, rgba` (signed; clipped to the canvas) | 0 |
-| `0x202` | `Canvas_Put_Pixels` | `handle, ptr, len` | 0. `len` must be exactly `width × height × 4`. Rows are top to bottom, bytes R, G, B, A |
+| Nr      | Name                | Arguments                                                  | Returns                                                                                 |
+| ------- | ------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `0x200` | `Canvas_Clear`      | `handle, rgba`                                             | 0                                                                                       |
+| `0x201` | `Canvas_Fill_Rect`  | `handle, x, y, w, h, rgba` (signed; clipped to the canvas) | 0                                                                                       |
+| `0x202` | `Canvas_Put_Pixels` | `handle, ptr, len`                                         | 0. `len` must be exactly `width × height × 4`. Rows are top to bottom, bytes R, G, B, A |
 
 All three return `-INVAL` for a node that is not a `Canvas`. Pages that want
 paths, text or anything else draw into their own buffer and upload it with
@@ -228,19 +228,19 @@ A page can fetch data from the servers its manifest names, and from nowhere
 else. Requests run in the background. A request returns a stream handle at
 once, and a `Fetch` event follows when the answer is in.
 
-| Nr | Name | Arguments | Returns |
-|---|---|---|---|
+| Nr      | Name         | Arguments                   | Returns                                                                                                                                                                                                  |
+| ------- | ------------ | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `0x300` | `Fetch_Open` | `url_ptr, url_len` (≤ 2048) | stream handle. `-PERM` if no manifest `fetch` line admits the URL. `-INVAL` for a malformed URL or another scheme. `-AGAIN` with 16 requests in flight. `-NOSYS` if the browser has no network (`nbrun`) |
-| `0x301` | `Fetch_Read` | `handle, ptr, cap` | bytes copied, `0` at the end of the body. `-AGAIN` until the `Fetch` event |
+| `0x301` | `Fetch_Read` | `handle, ptr, cap`          | bytes copied, `0` at the end of the body. `-AGAIN` until the `Fetch` event                                                                                                                               |
 
 ```odin
 h, err := nb.fetch("feed.txt")          // relative to the page's own address
 // ... in the event loop:
 case .Fetch:
-	if ev.handle == h && ev.a == 200 {
-		data, _ := nb.fetch_read_all(h, int(ev.b))
-	}
-	nb.close(h)
+    if ev.handle == h && ev.a == 200 {
+        data, _ := nb.fetch_read_all(h, int(ev.b))
+    }
+    nb.close(h)
 ```
 
 - **Addresses.** A request is an `nb://` URL, or a reference relative to the
@@ -276,20 +276,20 @@ is the server's address together with its key, so a server with a new key
 cannot read what pages stored under the old one. Local pages get one store
 per file. Without a quota, every call fails with `-PERM`.
 
-| Nr | Name | Arguments | Returns |
-|---|---|---|---|
-| `0x400` | `Storage_Get` | `key_ptr, key_len, buf_ptr, cap` | the value's full length. Copies `min(length, cap)` bytes. `-NOENT` if absent |
-| `0x401` | `Storage_Set` | `key_ptr, key_len, val_ptr, val_len` | 0. `-NOSPC` over the quota |
-| `0x402` | `Storage_Delete` | `key_ptr, key_len` | 0. `-NOENT` if absent |
-| `0x403` | `Storage_Usage` | | bytes used: keys plus values |
+| Nr      | Name             | Arguments                            | Returns                                                                      |
+| ------- | ---------------- | ------------------------------------ | ---------------------------------------------------------------------------- |
+| `0x400` | `Storage_Get`    | `key_ptr, key_len, buf_ptr, cap`     | the value's full length. Copies `min(length, cap)` bytes. `-NOENT` if absent |
+| `0x401` | `Storage_Set`    | `key_ptr, key_len, val_ptr, val_len` | 0. `-NOSPC` over the quota                                                   |
+| `0x402` | `Storage_Delete` | `key_ptr, key_len`                   | 0. `-NOENT` if absent                                                        |
+| `0x403` | `Storage_Usage`  |                                      | bytes used: keys plus values                                                 |
 
 Keys are 1 to 256 bytes of UTF-8. Values are at most 1 MiB.
 
 ## Reserved
 
-| Block | Subsystem | Milestone |
-|---|---|---|
-| `0x500` | reserved (a page-initiated "copy this text", if ever needed, would go here, never a read) | chrome |
+| Block   | Subsystem                                                                                 | Milestone |
+| ------- | ----------------------------------------------------------------------------------------- | --------- |
+| `0x500` | reserved (a page-initiated "copy this text", if ever needed, would go here, never a read) | chrome    |
 
 ## Manifest
 
@@ -307,13 +307,13 @@ storage 1M                  # persistent storage quota
 
 - **`fetch`** admits a server, optionally only part of it:
 
-  | Line | Admits |
-  |---|---|
-  | `fetch nb://example.org` | every path on example.org, port 4040 |
+  | Line                              | Admits                                                                    |
+  | --------------------------------- | ------------------------------------------------------------------------- |
+  | `fetch nb://example.org`          | every path on example.org, port 4040                                      |
   | `fetch nb://example.org:5000/api` | `/api` and everything below it, by whole segments (`/api/x`, not `/apix`) |
-  | `fetch nb://<key>@example.org` | example.org, and only if it proves it holds `<key>` |
-  | `fetch /` | the page's own server, with the key the page was loaded from |
-  | `fetch /data` | `/data` and below on the page's own server |
+  | `fetch nb://<key>@example.org`    | example.org, and only if it proves it holds `<key>`                       |
+  | `fetch /`                         | the page's own server, with the key the page was loaded from              |
+  | `fetch /data`                     | `/data` and below on the page's own server                                |
 
   Relative lines keep a page portable between servers. Lines in any other
   form are ignored, with a warning.
@@ -329,16 +329,16 @@ The SDK build embeds `manifest.txt` from the page directory with
 
 ## Limits
 
-| Limit | Value |
-|---|---|
-| Guest memory | 64 MiB by default, 1 GiB max (`nbrun --mem`) |
-| Stack | 1 MiB by default (`nbrun --stack`) |
-| Handles | 100 000 |
-| Log line | 16 KiB |
-| Node text | 1 MiB |
-| Attribute value | 64 KiB |
-| Random per call | 64 KiB |
-| Canvas | 4096 × 4096 |
-| Storage | the manifest's quota, at most 16 MiB; keys 256 bytes, values 1 MiB |
-| Fetch | 16 requests in flight per page; URLs 2048 bytes; bodies 16 MiB |
-| Running without waiting (`nb`) | 5 s, then the page is stopped |
+| Limit                          | Value                                                              |
+| ------------------------------ | ------------------------------------------------------------------ |
+| Guest memory                   | 64 MiB by default, 1 GiB max (`nbrun --mem`)                       |
+| Stack                          | 1 MiB by default (`nbrun --stack`)                                 |
+| Handles                        | 100 000                                                            |
+| Log line                       | 16 KiB                                                             |
+| Node text                      | 1 MiB                                                              |
+| Attribute value                | 64 KiB                                                             |
+| Random per call                | 64 KiB                                                             |
+| Canvas                         | 4096 × 4096                                                        |
+| Storage                        | the manifest's quota, at most 16 MiB; keys 256 bytes, values 1 MiB |
+| Fetch                          | 16 requests in flight per page; URLs 2048 bytes; bodies 16 MiB     |
+| Running without waiting (`nb`) | 5 s, then the page is stopped                                      |

@@ -24,22 +24,22 @@ and no JavaScript runtime.
 
 ## Components
 
-| Path | Package | Role |
-|---|---|---|
-| `src/abi` | `abi` | Syscall numbers, error codes, node kinds and attributes, the event layout. Constants only, so it compiles both for the host and for pages. |
-| `src/vm` | `vm` | User-mode RV64GC interpreter. `run(cpu, budget)` stops on budget, `ecall`, `ebreak` or fault. It knows nothing about syscalls. |
-| `src/loader` | `loader` | Validates and maps an ELF64 executable, sets up the stack, parses the `.nb_manifest` section. |
-| `src/host` | `host` | The page object: drives the VM, dispatches syscalls, owns the handle table and the view tree, and checks fetches against the manifest. No I/O; front ends plug in through callbacks (logging, fetch). |
-| `src/field` | `field` | Text editing: caret, selection, word moves, undo. It works on bytes, and leaves wrapped lines to `nb`. Used by `nb` for the address bar, the find bar, page Inputs and Text_Areas. |
-| `src/layout` | `layout` | Turns the view tree into positioned boxes. Text measurement is pluggable, so it is tested without graphics. |
-| `src/cmd/nb` | `main` | The browser window: SDL3 for windowing, input and drawing, SDL3_ttf (FreeType and HarfBuzz) for text. |
-| `src/cmd/nbrun` | `main` | Headless runner for development and tests. |
-| `src/proto` | `proto` | NB/1: framing, Noise sessions, messages, bundles, `nb://` URLs, key pinning. |
-| `src/server` | `server` | Serves bundles from a directory, one thread per connection. Used by `nbd` and the tests. |
-| `src/cmd/nbd` | `main` | The page server. |
-| `sdk/nb` | `nb` | What page authors import: syscall wrappers, a heap over `Mem_Grow`, the entry point, the linker script. |
-| `examples/` | | Example pages. |
-| `tests/` | | Assembly fixtures (`tests/asm`) and Odin test packages. |
+| Path            | Package  | Role                                                                                                                                                                                                  |
+| --------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/abi`       | `abi`    | Syscall numbers, error codes, node kinds and attributes, the event layout. Constants only, so it compiles both for the host and for pages.                                                            |
+| `src/vm`        | `vm`     | User-mode RV64GC interpreter. `run(cpu, budget)` stops on budget, `ecall`, `ebreak` or fault. It knows nothing about syscalls.                                                                        |
+| `src/loader`    | `loader` | Validates and maps an ELF64 executable, sets up the stack, parses the `.nb_manifest` section.                                                                                                         |
+| `src/host`      | `host`   | The page object: drives the VM, dispatches syscalls, owns the handle table and the view tree, and checks fetches against the manifest. No I/O; front ends plug in through callbacks (logging, fetch). |
+| `src/field`     | `field`  | Text editing: caret, selection, word moves, undo. It works on bytes, and leaves wrapped lines to `nb`. Used by `nb` for the address bar, the find bar, page Inputs and Text_Areas.                    |
+| `src/layout`    | `layout` | Turns the view tree into positioned boxes. Text measurement is pluggable, so it is tested without graphics.                                                                                           |
+| `src/cmd/nb`    | `main`   | The browser window: SDL3 for windowing, input and drawing, SDL3_ttf (FreeType and HarfBuzz) for text.                                                                                                 |
+| `src/cmd/nbrun` | `main`   | Headless runner for development and tests.                                                                                                                                                            |
+| `src/proto`     | `proto`  | NB/1: framing, Noise sessions, messages, bundles, `nb://` URLs, key pinning.                                                                                                                          |
+| `src/server`    | `server` | Serves bundles from a directory, one thread per connection. Used by `nbd` and the tests.                                                                                                              |
+| `src/cmd/nbd`   | `main`   | The page server.                                                                                                                                                                                      |
+| `sdk/nb`        | `nb`     | What page authors import: syscall wrappers, a heap over `Mem_Grow`, the entry point, the linker script.                                                                                               |
+| `examples/`     |          | Example pages.                                                                                                                                                                                        |
+| `tests/`        |          | Assembly fixtures (`tests/asm`) and Odin test packages.                                                                                                                                               |
 
 ## Execution model
 
@@ -93,7 +93,7 @@ declared in its manifest and enforced by the host. See
 
 ## The view tree
 
-Pages describe *what* to show, not *how*: a tree of semantic nodes (box,
+Pages describe _what_ to show, not _how_: a tree of semantic nodes (box,
 heading, paragraph, link, button, input, image, canvas, list…) with
 attributes. The browser does layout and rendering. Because the tree is
 semantic, accessibility, find-in-page, text selection and copy, zoom, reader
@@ -122,7 +122,7 @@ cooperation. A `Canvas` node will give pages raw drawing where they need it.
   `src/layout/inline.odin`:
   1. Its runs are split into words and spaces, each measured in its own font.
   2. Lines are broken greedily at spaces, across style changes.
-  3. The result is a list of *fragments*: one node's text, on one line, in
+  3. The result is a list of _fragments_: one node's text, on one line, in
      one style.
 
   Rendering, hit-testing, selection and find all work per fragment. A link
@@ -154,13 +154,13 @@ package main
 import nb "../../sdk/nb"   // or a -collection
 
 main :: proc() {
-	root := nb.el(.Box)
-	nb.el(.Heading, root, "Hello")
-	nb.set_root(root)
-	for {
-		ev, ok := nb.wait_event()
-		if ok && ev.kind == .Quit { return }
-	}
+    root := nb.el(.Box)
+    nb.el(.Heading, root, "Hello")
+    nb.set_root(root)
+    for {
+        ev, ok := nb.wait_event()
+        if ok && ev.kind == .Quit { return }
+    }
 }
 
 @(export, link_name="_start")
@@ -242,6 +242,7 @@ contains pages written directly in assembly.
      [syscalls.md](syscalls.md#fetch-0x300).
 
 Later ideas:
+
 - inline images; bidirectional text and line breaking per the Unicode algorithm (kb_text_shape provides both)
 - a history and bookmarks view
 - a visible, keyboard-driven caret on pages (caret browsing, F7)

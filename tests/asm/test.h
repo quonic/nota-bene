@@ -17,6 +17,7 @@
 #define SYS_NODE_APPEND   0x103
 #define SYS_NODE_REMOVE   0x104
 #define SYS_ROOT_SET      0x105
+#define SYS_IMAGE_SET_DATA 0x10A
 
 #define E_PERM  -1
 #define E_INVAL -2

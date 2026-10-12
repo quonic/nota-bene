@@ -497,3 +497,109 @@ test_fetch_policy :: proc(t: ^testing.T) {
 	testing.expect(t, host.fetch_entry_valid("nb://example.org"))
 	testing.expect(t, !host.fetch_entry_valid("https://example.org"))
 }
+
+// The 4x3 pattern drawn by tests/images/make_images.py, as RGBA.
+IMAGE_PATTERN :: [12][4]u8{
+	{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 255, 255},
+	{0, 0, 0, 255}, {255, 255, 0, 255}, {0, 255, 255, 255}, {255, 0, 255, 255},
+	{128, 128, 128, 255}, {64, 32, 16, 255}, {200, 100, 50, 255}, {255, 0, 0, 128},
+}
+
+// The grey pattern; the last pixel is half transparent in graya.png.
+IMAGE_GRAYS :: [12]u8{0, 255, 128, 64, 32, 16, 8, 1, 200, 100, 50, 255}
+
+@(test)
+test_image_set_data :: proc(t: ^testing.T) {
+	p: host.Page
+	p.allocator = context.allocator
+	host.handle_table_init(&p.handles, 100)
+	defer host.page_destroy(&p)
+	img, _ := host.node_create(&p, .Image)
+
+	expect_pixels :: proc(t: ^testing.T, p: ^host.Page, h: abi.Handle, want: [12][4]u8, name: string) {
+		n := host.node_get(p, h)
+		if !testing.expectf(t, n.bitmap.width == 4 && n.bitmap.height == 3, "%s: size %dx%d", name, n.bitmap.width, n.bitmap.height) {
+			return
+		}
+		for px, i in want {
+			got := [4]u8{n.bitmap.pixels[4 * i], n.bitmap.pixels[4 * i + 1], n.bitmap.pixels[4 * i + 2], n.bitmap.pixels[4 * i + 3]}
+			testing.expectf(t, got == px, "%s: pixel %d is %v, want %v", name, i, got, px)
+		}
+	}
+
+	opaque := IMAGE_PATTERN
+	opaque[11].a = 255
+	grays, graya: [12][4]u8
+	for g, i in IMAGE_GRAYS {
+		grays[i] = {g, g, g, 255}
+		graya[i] = grays[i]
+	}
+	graya[11].a = 128
+
+	Case :: struct {
+		name: string,
+		data: []u8,
+		want: [12][4]u8,
+	}
+	cases := []Case {
+		{"rgba.png", #load("../images/rgba.png"), IMAGE_PATTERN},
+		{"rgba16.png", #load("../images/rgba16.png"), IMAGE_PATTERN},
+		{"rgb.png", #load("../images/rgb.png"), opaque},
+		{"indexed.png", #load("../images/indexed.png"), opaque},
+		{"gray.png", #load("../images/gray.png"), grays},
+		{"graya.png", #load("../images/graya.png"), graya},
+	}
+	for c in cases {
+		tree, paint := p.tree_version, p.paint_version
+		testing.expectf(t, host.node_set_image(&p, img, c.data) == .OK, "%s does not decode", c.name)
+		expect_pixels(t, &p, img, c.want, c.name)
+		testing.expect(t, p.tree_version > tree, "a new picture means a new layout")
+		testing.expect(t, p.paint_version > paint)
+		testing.expect_value(t, host.node_get(&p, img).bitmap.version, p.paint_version)
+		testing.expect_value(t, p.bitmap_bytes, 4 * 3 * 4)
+	}
+
+	// Baseline JPEG: four 16x16 quadrants, close to their colours at the centres.
+	testing.expect_value(t, host.node_set_image(&p, img, #load("../images/baseline.jpg")), abi.Errno.OK)
+	bm := host.node_get(&p, img).bitmap
+	testing.expect_value(t, bm.width, 32)
+	testing.expect_value(t, bm.height, 32)
+	for q in ([][3]int{{8, 8, 0xFF0000}, {24, 8, 0x00FF00}, {8, 24, 0x0000FF}, {24, 24, 0xFFFFFF}}) {
+		px := bm.pixels[4 * (q.y * 32 + q.x):][:4]
+		want := [3]int{q.z >> 16, q.z >> 8 & 0xFF, q.z & 0xFF}
+		for c in 0 ..< 3 {
+			testing.expectf(t, abs(int(px[c]) - want[c]) <= 8, "jpeg (%d,%d) is %v, want %v", q.x, q.y, px, want)
+		}
+		testing.expect_value(t, px[3], 255)
+	}
+
+	// Failures leave the picture as it was.
+	testing.expect_value(t, host.node_set_image(&p, img, #load("../images/progressive.jpg")), abi.Errno.INVAL)
+	testing.expect_value(t, host.node_set_image(&p, img, #load("../images/wide.png")), abi.Errno.RANGE)
+	rgba := #load("../images/rgba.png")
+	testing.expect_value(t, host.node_set_image(&p, img, rgba[:len(rgba) / 2]), abi.Errno.INVAL)
+	testing.expect_value(t, host.node_set_image(&p, img, transmute([]u8)string("GIF89a not really")), abi.Errno.INVAL)
+	testing.expect_value(t, host.node_get(&p, img).bitmap.width, 32)
+	testing.expect_value(t, p.bitmap_bytes, 32 * 32 * 4)
+
+	box, _ := host.node_create(&p, .Box)
+	testing.expect_value(t, host.node_set_image(&p, box, rgba), abi.Errno.INVAL)
+	testing.expect_value(t, host.node_set_image(&p, abi.Handle(9999), rgba), abi.Errno.BADH)
+
+	// Empty data clears it; closing the node gives the memory back.
+	testing.expect_value(t, host.node_set_image(&p, img, nil), abi.Errno.OK)
+	testing.expect(t, host.node_get(&p, img).bitmap.pixels == nil)
+	testing.expect_value(t, p.bitmap_bytes, 0)
+	testing.expect_value(t, host.node_set_image(&p, img, rgba), abi.Errno.OK)
+	testing.expect_value(t, p.bitmap_bytes, 48)
+	host.node_close(&p, img)
+	testing.expect_value(t, p.bitmap_bytes, 0)
+
+	// The tree dump shows the picture's size.
+	img2, _ := host.node_create(&p, .Image)
+	host.node_set_image(&p, img2, rgba)
+	p.root = img2
+	sb := strings.builder_make(context.temp_allocator)
+	host.dump_tree(&p, &sb)
+	testing.expect_value(t, strings.to_string(sb), "image 4x3\n")
+}

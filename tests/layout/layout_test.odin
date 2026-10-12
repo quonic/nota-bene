@@ -316,3 +316,93 @@ test_mixed_children_stay_blocks :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(r.fragments), 0)
 	testing.expect_value(t, r.items[1].inline_root, -1)
 }
+
+@(test)
+test_image_sizes :: proc(t: ^testing.T) {
+	p: host.Page
+	new_page(&p)
+	defer host.page_destroy(&p)
+	root := node(&p, .Box)
+	PNG :: #load("../images/rgba.png") // 4x3
+	sized :: proc(p: ^host.Page, root: abi.Handle, attr: abi.Attr = .Label, value := "") -> abi.Handle {
+		img := node(p, .Image, root)
+		host.node_set_image(p, img, PNG)
+		if value != "" {
+			host.node_set_attr(p, img, attr, value)
+		}
+		return img
+	}
+	node(&p, .Image, root)                // no picture: the placeholder
+	sized(&p, root)                       // its own size
+	sized(&p, root, .Width, "40")         // height follows
+	sized(&p, root, .Height, "6")         // width follows
+	both := sized(&p, root, .Width, "10") // both given: stretched
+	host.node_set_attr(&p, both, .Height, "50")
+	sized(&p, root, .Width, "1000")       // too wide: scaled down to fit
+	p.root = root
+
+	r: layout.Result
+	defer layout.result_destroy(&r)
+	layout.layout(&p, 400, M, layout.DEFAULT_THEME, &r)
+	want := [][2]f32{layout.IMAGE_PLACEHOLDER, {4, 3}, {40, 30}, {8, 6}, {10, 50}, {368, 276}}
+	for size, i in want {
+		tr := r.items[i + 1].text_rect
+		testing.expectf(t, tr.w == size.x && tr.h == size.y, "image %d: %vx%v, want %v", i, tr.w, tr.h, size)
+		testing.expectf(t, r.items[i + 1].rect.h == size.y, "image %d box height %v", i, r.items[i + 1].rect.h)
+	}
+}
+
+@(test)
+test_inline_image :: proc(t: ^testing.T) {
+	p: host.Page
+	new_page(&p)
+	defer host.page_destroy(&p)
+	para := node(&p, .Paragraph, text = "ab ")
+	img := node(&p, .Image, para)
+	host.node_set_image(&p, img, #load("../images/rgba.png"))
+	host.node_set_attr(&p, img, .Width, "40") // 40x30
+	node(&p, .Text, para, " cd")
+	p.root = para
+
+	// 70 px wide: "ab", a space and the image fit on the first line; " cd" does not.
+	r: layout.Result
+	defer layout.result_destroy(&r)
+	layout.layout(&p, 70 + 32, M, layout.DEFAULT_THEME, &r)
+
+	testing.expect_value(t, len(r.items), 3)
+	testing.expect_value(t, r.items[1].inline_root, 0)
+	testing.expect_value(t, r.items[1].frag_count, 1)
+	f := r.fragments[r.items[1].frag_first]
+	expect_rect(t, f.rect, {16 + 24, 16, 40, 30}, "image fragment")
+	testing.expect_value(t, f.start, f.end)
+	expect_rect(t, r.items[1].text_rect, f.rect, "image box")
+	// The image makes the first line 30 tall; text sits on its bottom.
+	expect_rect(t, r.fragments[0].rect, {16, 16 + 10, 24, 20}, "ab")
+	cd := r.fragments[r.items[2].frag_first]
+	expect_rect(t, cd.rect, {16, 16 + 30, 16, 20}, "cd, wrapped")
+	expect_rect(t, r.items[0].rect, {16, 16, 70, 50}, "paragraph")
+}
+
+@(test)
+test_image_link :: proc(t: ^testing.T) {
+	p: host.Page
+	new_page(&p)
+	defer host.page_destroy(&p)
+	para := node(&p, .Paragraph, text = "see ")
+	link := node(&p, .Link, para)
+	host.node_set_attr(&p, link, .Href, "next.elf")
+	img := node(&p, .Image, link) // the 120x80 placeholder, inline
+	p.root = para
+
+	r: layout.Result
+	defer layout.result_destroy(&r)
+	layout.layout(&p, 400, M, layout.DEFAULT_THEME, &r)
+	i := layout.hit_test(&r, 16 + 32 + 60, 16 + 40)
+	if !testing.expect(t, i >= 0) {
+		return
+	}
+	testing.expect_value(t, r.items[i].handle, img)
+	l := layout.find_ancestor(&r, i, {.Link})
+	testing.expect(t, l >= 0 && r.items[l].href == "next.elf")
+	testing.expect_value(t, layout.hit_test(&r, 16 + 32 + 130, 16 + 40), 0) // past the image: the paragraph
+}

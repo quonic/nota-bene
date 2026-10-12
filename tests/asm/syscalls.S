@@ -172,6 +172,37 @@ _start:
 	SYSCALL	0x403
 	CHECK	32, a0, E_PERM
 
+	// Image_Set_Data: only on an Image, only readable memory, at most 16 MiB,
+	// and only bytes that decode. Empty data clears the picture.
+	mv	a0, s1			// a Box
+	la	a1, msg
+	li	a2, 2
+	SYSCALL	SYS_IMAGE_SET_DATA
+	CHECK	33, a0, E_INVAL
+	li	a0, 7			// Image
+	SYSCALL	SYS_NODE_CREATE
+	blez	a0, fail
+	mv	s3, a0
+	li	a1, 0
+	li	a2, 16
+	SYSCALL	SYS_IMAGE_SET_DATA
+	CHECK	34, a0, E_FAULT
+	mv	a0, s3
+	la	a1, msg
+	li	a2, 0x1000001
+	SYSCALL	SYS_IMAGE_SET_DATA
+	CHECK	35, a0, E_RANGE
+	mv	a0, s3
+	la	a1, msg
+	li	a2, 2
+	SYSCALL	SYS_IMAGE_SET_DATA
+	CHECK	36, a0, E_INVAL
+	mv	a0, s3
+	li	a1, 0
+	li	a2, 0
+	SYSCALL	SYS_IMAGE_SET_DATA
+	CHECK	37, a0, 0
+
 	PASS
 
 fail:

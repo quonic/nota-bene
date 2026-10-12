@@ -114,6 +114,7 @@ clock ahead, and the first unbounded wait with `Quit`.
 | `0x107` | `Input_Get_Selection` | `handle, ptr`                                                             | 0. Writes a 16-byte `Selection`                                                                                            |
 | `0x108` | `Input_Set_Selection` | `handle, anchor, caret`                                                   | 0. `-RANGE` past the end of the text, `-INVAL` inside a character                                                          |
 | `0x109` | `Input_Focus`         | `handle`, or 0                                                            | 0. Gives the Input keyboard focus; 0 takes focus off the page's Inputs. `-INVAL` for a node not in the tree under the root |
+| `0x10A` | `Image_Set_Data`      | `handle, ptr, len` (≤ 16 MiB): a PNG or baseline JPEG file. 0 clears it   | 0. See [Images](#images)                                                                                                   |
 
 `Handle_Close` on a node detaches it. Its children become detached roots and
 keep their handles.
@@ -123,8 +124,8 @@ keep their handles.
 11 `Emphasis`, 12 `Strong`, 13 `Code`, 14 `Text_Area`.
 
 **Inline text.** A `Paragraph`, `Heading` or `List_Item` whose children are
-all _inline_ (`Text`, `Link`, `Emphasis`, `Strong`, `Code`, nested to any
-depth) flows its own text and its children's as one wrapped paragraph:
+all _inline_ (`Text`, `Link`, `Emphasis`, `Strong`, `Code`, `Image`, nested
+to any depth) flows its own text and its children's as one wrapped paragraph:
 
 ```odin
 p := nb.el(.Paragraph, root, "Read the ")
@@ -142,6 +143,10 @@ nb.el(.Text, p, ".")
   paragraph.
 - **Spaces are part of the text.** Put them inside the runs (`"Read the "`),
   as in the example.
+- **Images flow like words.** An `Image` in a paragraph is one box on the
+  line. It wraps to the next line when it does not fit, a tall image makes
+  its line taller, and text sits on its bottom edge. Inside a `Link` it is
+  part of the link.
 - **Mixed content stays block layout.** A paragraph that also contains block
   children (a `Button`, say) lays every child out as a block.
 
@@ -172,6 +177,38 @@ Input starts over.
   U+000A. Ctrl+Enter is sent to the page as a `Key` event instead.
 - Up and Down move by line, and Home and End go to the ends of the line;
   Ctrl+Home and Ctrl+End go to the ends of the text.
+
+### Images
+
+An `Image` shows a picture the page hands over as the bytes of a PNG or
+baseline (not progressive) JPEG file. The page embeds the file, or fetches
+it like any other data, and the browser decodes it:
+
+```odin
+img := nb.el(.Image, root)
+nb.set_attr(img, .Alt, "The harbour at dawn")
+nb.image_set_data(img, #load("harbour.jpg"))
+// or, once a Fetch event says the file is in:
+data, _ := nb.fetch_read_all(h, int(ev.b))
+nb.image_set_data(img, data)
+```
+
+- **Size.** The picture is drawn at its size in pixels. `Width` or `Height`
+  alone scales it and keeps its aspect ratio, and both together stretch it.
+  A picture wider than the space it is in is scaled down to fit.
+- **No picture yet.** Until it has one, or after it is cleared with an empty
+  buffer, an Image is a 120×80 placeholder showing its `Alt` text. A page
+  that fetches its images can set `Alt` and show the page at once.
+- **Errors.**
+  - `-INVAL` for a node that is not an `Image`, or for bytes that are not a
+    PNG or baseline JPEG that decodes.
+  - `-RANGE` for data over 16 MiB, or a picture over 4096 pixels on a side.
+  - `-NOMEM` once the page's decoded images would take more than 256 MiB.
+
+  A failed call leaves the previous picture in place.
+- **Formats.** PNG of every kind: grey, RGB and palette images, with or
+  without alpha, 8 or 16 bits. JPEG must be baseline; progressive JPEG fails
+  with `-INVAL`.
 
 ### Input selection
 
@@ -339,6 +376,7 @@ The SDK build embeds `manifest.txt` from the page directory with
 | Attribute value                | 64 KiB                                                             |
 | Random per call                | 64 KiB                                                             |
 | Canvas                         | 4096 × 4096                                                        |
+| Image                          | 16 MiB encoded, 4096 × 4096; 256 MiB decoded per page              |
 | Storage                        | the manifest's quota, at most 16 MiB; keys 256 bytes, values 1 MiB |
 | Fetch                          | 16 requests in flight per page; URLs 2048 bytes; bodies 16 MiB     |
 | Running without waiting (`nb`) | 5 s, then the page is stopped                                      |

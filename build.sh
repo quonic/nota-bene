@@ -6,11 +6,12 @@
 #   ./build.sh page DIR [OUT]  build the Odin page in DIR into an ELF (default build/<name>.elf)
 #   ./build.sh fixtures        assemble the RV64 test programs
 #   ./build.sh test            build everything and run all tests
+#   ./build.sh images          regenerate the test and example images with GIMP
 #   ./build.sh clean
 #
 # Needs odin, clang (with the riscv64 target), ld.lld and llvm-objcopy; the
-# browser also needs SDL3 and SDL3_ttf.
-# Override any of them with ODIN=, CLANG=, LLD=, OBJCOPY=.
+# browser also needs SDL3 and SDL3_ttf. Only `images` needs GIMP 3.
+# Override any of them with ODIN=, CLANG=, LLD=, OBJCOPY=, GIMP=.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +20,7 @@ ODIN="${ODIN:-odin}"
 CLANG="${CLANG:-clang}"
 LLD="${LLD:-ld.lld}"
 OBJCOPY="${OBJCOPY:-llvm-objcopy}"
+GIMP="${GIMP:-gimp-console}"
 
 RV_FLAGS=(--target=riscv64 -mabi=lp64d)
 # Odin cannot link freestanding riscv64 executables itself, so pages are built
@@ -132,6 +134,13 @@ build_fixtures() {
 	done
 }
 
+# The images are committed; this only needs running when the script changes.
+# --quit matters: without it GIMP waits after the batch commands.
+build_images() {
+	log "images"
+	NB_ROOT="$ROOT" "$GIMP" -i -n --quit --batch-interpreter=python-fu-eval -b - <"$ROOT/tests/images/make_images.py"
+}
+
 run_tests() {
 	build_tools
 	build_examples
@@ -151,6 +160,7 @@ case "${1:-all}" in
 	page)     shift; build_page "$@" ;;
 	fixtures) build_fixtures ;;
 	test)     run_tests ;;
+	images)   build_images ;;
 	clean)    rm -rf "$BUILD" ;;
-	*)        sed -n '2,12p' "$0"; exit 2 ;;
+	*)        sed -n '2,13p' "$0"; exit 2 ;;
 esac

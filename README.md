@@ -16,6 +16,7 @@ Done so far:
 3. the network layer: `nbd` serves pages over Noise, and `nb` opens `nb://` addresses
 4. browser chrome: tabs, an address bar, text selection, find in page, a clipboard, and private per-site storage with quotas (see the Notes and About examples)
 5. pages fetch data, but only from the servers their manifest names (see the Feed example)
+6. images: PNG and JPEG, as blocks or inline in text (see the Images example)
 
 ## Documentation
 

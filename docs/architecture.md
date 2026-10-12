@@ -118,9 +118,10 @@ cooperation. A `Canvas` node will give pages raw drawing where they need it.
   `Padding`, `Width`, `Height`, `Font_Size`, `Color` and `Background`
   attributes adjust them.
 - **Inline formatting.** A Paragraph, Heading or List_Item whose children are
-  all inline (Text, Link, Emphasis, Strong, Code) is laid out by
+  all inline (Text, Link, Emphasis, Strong, Code, Image) is laid out by
   `src/layout/inline.odin`:
   1. Its runs are split into words and spaces, each measured in its own font.
+     An Image is a single word the size of its picture.
   2. Lines are broken greedily at spaces, across style changes.
   3. The result is a list of _fragments_: one node's text, on one line, in
      one style.
@@ -240,10 +241,23 @@ contains pages written directly in assembly.
      that arrives after the user navigated away or closed the tab is dropped.
    - **On the server,** the new NB/1 `read` op serves files as they are. See
      [syscalls.md](syscalls.md#fetch-0x300).
+6. **Images** (done). `Image_Set_Data` hands the browser a PNG or baseline
+   JPEG that the page embedded or fetched.
+   - **Decoding.** `host` decodes it with Odin's `core:image`, which is pure
+     Odin and bounds-checked. It reads the header first, so an oversized
+     picture is refused before its pixels are allocated, and it keeps RGBA8
+     pixels on the node.
+   - **Layout and drawing.** Layout sizes the picture and flows it inline
+     inside paragraphs and links. `nb` keeps one texture per image, as it
+     does for canvases, and uploads it again only when the picture changes.
+   - **Test images** come from GIMP. `./build.sh images` runs
+     `tests/images/make_images.py` in GIMP's batch mode and regenerates the
+     fixtures and the example page's pictures. The results are committed, so
+     building and testing need no GIMP.
 
 Later ideas:
 
-- inline images; bidirectional text and line breaking per the Unicode algorithm (kb_text_shape provides both)
+- bidirectional text and line breaking per the Unicode algorithm (kb_text_shape provides both)
 - a history and bookmarks view
 - a visible, keyboard-driven caret on pages (caret browsing, F7)
 - an accessibility bridge: the semantic tree maps directly onto platform accessibility APIs

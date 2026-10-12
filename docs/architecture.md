@@ -30,7 +30,7 @@ and no JavaScript runtime.
 | `src/vm` | `vm` | User-mode RV64GC interpreter. `run(cpu, budget)` stops on budget, `ecall`, `ebreak` or fault. It knows nothing about syscalls. |
 | `src/loader` | `loader` | Validates and maps an ELF64 executable, sets up the stack, parses the `.nb_manifest` section. |
 | `src/host` | `host` | The page object: drives the VM, dispatches syscalls, owns the handle table and the view tree, and checks fetches against the manifest. No I/O; front ends plug in through callbacks (logging, fetch). |
-| `src/field` | `field` | One-line text editing: caret, selection, word moves, undo. Used by `nb` for the address bar, the find bar and page Inputs. |
+| `src/field` | `field` | Text editing: caret, selection, word moves, undo. It works on bytes, and leaves wrapped lines to `nb`. Used by `nb` for the address bar, the find bar, page Inputs and Text_Areas. |
 | `src/layout` | `layout` | Turns the view tree into positioned boxes. Text measurement is pluggable, so it is tested without graphics. |
 | `src/cmd/nb` | `main` | The browser window: SDL3 for windowing, input and drawing, SDL3_ttf (FreeType and HarfBuzz) for text. |
 | `src/cmd/nbrun` | `main` | Headless runner for development and tests. |
@@ -112,7 +112,9 @@ cooperation. A `Canvas` node will give pages raw drawing where they need it.
 - A node's own text is wrapped to its inner width and placed before its
   children.
 - Browser defaults per kind set the look: heading sizes, link colour and
-  underline, button and input boxes, list indentation and bullets. The `Gap`,
+  underline, button and input boxes, list indentation and bullets. An Input
+  is one line tall; a Text_Area is four lines (or `Height`) and its text
+  wraps and scrolls inside the box rather than making it taller. The `Gap`,
   `Padding`, `Width`, `Height`, `Font_Size`, `Color` and `Background`
   attributes adjust them.
 - **Inline formatting.** A Paragraph, Heading or List_Item whose children are
@@ -208,7 +210,10 @@ contains pages written directly in assembly.
      `nb` adds drawing, mouse selection and sideways scrolling. Pages read
      and place an Input's selection with `Input_Get_Selection` and
      `Input_Set_Selection`, get a `Select` event when the user moves it, and
-     focus an Input with `Input_Focus`.
+     focus an Input with `Input_Focus`. A Text_Area is the multi-line kind:
+     `nb` wraps its text, moves the caret by line with Up and Down, scrolls
+     it inside the box, and inserts a newline on Enter (Ctrl+Enter goes to
+     the page).
    - **Text selection and find in page.** These work on every page with no
      page code, because the browser knows the text of every node:
      - Drag to select across nodes, double-click selects a word,

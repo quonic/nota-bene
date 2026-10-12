@@ -65,12 +65,12 @@ Event :: struct {      // offset
 |---|---|---|
 | `Quit` | 1 | The page is closing. Clean up and return from `main` or `Exit`. |
 | `Timer` | 2 | |
-| `Click` | 3 | `handle` = the nearest Button, Link, Input or Canvas under the pointer (else the deepest node). `a`, `b` = position relative to the node (to the pixel grid, for a Canvas). `c` = `Modifiers` |
-| `Key` | 4 | `handle` = focused Input or 0. `a` = `Key` value or the key's lowercase code point. `b` = `Modifiers`. `c` = 1 down / 0 up |
-| `Text` | 5 | `handle` = focused Input or 0. `a` = a typed Unicode code point |
+| `Click` | 3 | `handle` = the nearest Button, Link, Input, Text_Area or Canvas under the pointer (else the deepest node). `a`, `b` = position relative to the node (to the pixel grid, for a Canvas). `c` = `Modifiers` |
+| `Key` | 4 | `handle` = focused Input (or Text_Area) or 0. `a` = `Key` value or the key's lowercase code point. `b` = `Modifiers`. `c` = 1 down / 0 up |
+| `Text` | 5 | `handle` = focused Input (or Text_Area) or 0. `a` = a typed Unicode code point |
 | `Resize` | 6 | `a` width, `b` height of the viewport in px. Sent once when the page starts and on every resize |
 | `Fetch` | 7 | `handle` = fetch stream. `a` = the server's status (200, 404, …) or a negated error code. `b` = body length. See [Fetch](#fetch-0x300) |
-| `Change` | 8 | `handle` = an Input whose text the user edited. Read it with `Node_Get_Text` |
+| `Change` | 8 | `handle` = an Input or Text_Area whose text the user edited. Read it with `Node_Get_Text` |
 | `Select` | 9 | `handle` = an Input whose caret or selection the user moved. `a` = anchor, `b` = caret. See [Input selection](#input-selection) |
 
 **`Key` values** for non-character keys: `Backspace` 0x08, `Tab` 0x09,
@@ -87,11 +87,13 @@ with the arrows, Home and End while there is a selection on the page, though
 the page still gets those `Key` events. In a focused Input, the browser also
 keeps the keys it edits with: Left, Right, Home, End, Backspace and Delete
 (with or without Shift and Ctrl), Ctrl+A, and Ctrl+Z / Ctrl+Y for undo and
-redo. While the address bar has focus, no keys reach the page.
+redo. A focused Text_Area also keeps Up, Down, Page Up, Page Down and Enter;
+Ctrl+Enter still reaches the page, so it can be used to submit. While the address bar has focus, no keys reach the page.
 
 **Clipboard.** Pages have no clipboard syscalls. The user copies and pastes
 in Inputs through the browser, and a paste arrives like typing: as `Text`
-events plus one `Change`. That way a page can never read the clipboard
+events plus one `Change`. Pasted newlines become spaces in an Input and are
+kept in a Text_Area. That way a page can never read the clipboard
 behind the user's back. Links with an
 `Href` are followed by the browser; clicking one does not send a `Click`.
 
@@ -118,7 +120,7 @@ keep their handles.
 
 **Node kinds:** 0 `Box`, 1 `Text`, 2 `Heading`, 3 `Paragraph`, 4 `Link`,
 5 `Button`, 6 `Input`, 7 `Image`, 8 `Canvas`, 9 `List`, 10 `List_Item`,
-11 `Emphasis`, 12 `Strong`, 13 `Code`.
+11 `Emphasis`, 12 `Strong`, 13 `Code`, 14 `Text_Area`.
 
 **Inline text.** A `Paragraph`, `Heading` or `List_Item` whose children are
 all *inline* (`Text`, `Link`, `Emphasis`, `Strong`, `Code`, nested to any
@@ -159,11 +161,24 @@ every edit. A page can still set the text with `Node_Set_Text`. The caret
 stays where it was if it still fits, and the user's undo history for that
 Input starts over.
 
+**A `Text_Area` is a multi-line Input.** Everything here and under
+[Input selection](#input-selection) applies to it too: the same syscalls,
+`Change` and `Select` events, and focus with Tab. The differences:
+
+- Its text wraps at the box width. The box is four lines tall unless
+  `Height` sets it, and longer text scrolls inside it. `Width` works as for
+  an Input.
+- Enter inserts a newline, which the page sees as a `Text` event for
+  U+000A. Ctrl+Enter is sent to the page as a `Key` event instead.
+- Up and Down move by line, and Home and End go to the ends of the line;
+  Ctrl+Home and Ctrl+End go to the ends of the text.
+
 ### Input selection
 
-A page can ask where the caret and selection are in an Input, and move
-them. Offsets are bytes into the Input's text, on character boundaries, as
-with `Node_Get_Text`.
+A page can ask where the caret and selection are in an Input or Text_Area,
+and move them. Offsets are bytes into the text, on character boundaries, as
+with `Node_Get_Text`. In a Text_Area they count newlines like any other
+character.
 
 ```odin
 Selection :: struct { // offset
@@ -188,7 +203,8 @@ Selection :: struct { // offset
 - **`Node_Set_Text`** keeps the selection where it still fits, and pulls it
   back to the end of the new text otherwise.
 
-These syscalls fail with `-INVAL` for a node that is not an Input.
+These syscalls fail with `-INVAL` for a node that is not an Input or a
+Text_Area.
 
 ## Canvas (`0x200`)
 

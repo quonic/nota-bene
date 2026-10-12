@@ -176,6 +176,16 @@ focus :: proc "contextless" (h: Handle) -> Errno {
 	return to_errno(sys(.Input_Focus, uintptr(h)))
 }
 
+// Gives an Image its picture: the bytes of a PNG or baseline JPEG file,
+// embedded in the page or fetched. The browser decodes them; .INVAL means it
+// could not. Empty `data` clears the picture.
+//
+//	nb.image_set_data(img, #load("logo.png"))
+//	nb.image_set_data(img, data)              // from nb.fetch_read_all
+image_set_data :: proc "contextless" (h: Handle, data: []u8) -> Errno {
+	return to_errno(sys(.Image_Set_Data, uintptr(h), uintptr(raw_data(data)), uintptr(len(data))))
+}
+
 // Canvas drawing. Colours are 0xRRGGBBAA.
 
 canvas_clear :: proc "contextless" (h: Handle, rgba: u32) -> Errno {

@@ -32,7 +32,7 @@ Cached_Text :: struct {
 	wrap:  i32,
 }
 
-Cached_Canvas :: struct {
+Cached_Texture :: struct {
 	tex:     ^sdl.Texture,
 	w, h:    int,
 	version: u64,
@@ -60,7 +60,7 @@ Tab :: struct {
 	painted:     u64, // page.paint_version at the last frame
 
 	texts:    map[u64]Cached_Text,
-	canvases: map[abi.Handle]Cached_Canvas,
+	textures: map[abi.Handle]Cached_Texture,
 
 	job:       ^Fetch_Job, // network load in progress (net.odin)
 	publisher: string,     // fingerprint of the current page's publisher, if signed
@@ -166,10 +166,10 @@ unload_page :: proc(b: ^Browser) {
 		delete(c.str)
 	}
 	clear(&b.texts)
-	for _, c in b.canvases {
+	for _, c in b.textures {
 		sdl.DestroyTexture(c.tex)
 	}
-	clear(&b.canvases)
+	clear(&b.textures)
 	if b.loaded {
 		host.page_destroy(&b.page)
 		b.loaded = false
@@ -379,7 +379,7 @@ update_layout :: proc(b: ^Browser) {
 		}
 	}
 
-	// Forget cached text and canvases for nodes that are gone.
+	// Forget cached text and textures (canvases, images) for nodes that are gone.
 	live := make(map[abi.Handle]bool, len(b.lay.items), context.temp_allocator)
 	for item in b.lay.items {
 		live[item.handle] = true
@@ -393,10 +393,10 @@ update_layout :: proc(b: ^Browser) {
 			delete_key(&b.texts, key)
 		}
 	}
-	for h, c in b.canvases {
+	for h, c in b.textures {
 		if !live[h] {
 			sdl.DestroyTexture(c.tex)
-			delete_key(&b.canvases, h)
+			delete_key(&b.textures, h)
 		}
 	}
 	if b.focus != abi.INVALID_HANDLE && !live[b.focus] {

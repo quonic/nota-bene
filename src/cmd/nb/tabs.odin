@@ -91,7 +91,7 @@ close_tab :: proc(b: ^Browser, t: ^Tab) -> bool {
 	delete(t.message)
 	delete(t.publisher)
 	delete(t.texts)
-	delete(t.canvases)
+	delete(t.textures)
 	delete(t.matches)
 	field.destroy(&t.input)
 	layout.result_destroy(&t.lay)

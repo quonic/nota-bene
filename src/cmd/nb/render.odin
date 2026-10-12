@@ -177,6 +177,12 @@ draw_item :: proc(b: ^Browser, item: ^layout.Item, index: int, dy: f32) {
 		draw_canvas(b, item, tr)
 		return
 	case .Image:
+		// Inline or not, tr is the picture's box.
+		if n := host.node_get(&b.page, item.handle); n != nil && n.bitmap.pixels != nil {
+			bm := &n.bitmap
+			draw_pixels(b, item.handle, bm.width, bm.height, bm.pixels, bm.version, .LINEAR, tr)
+			return
+		}
 		fill_rect(b, tr, b.theme.placeholder)
 		alt := item.alt if item.alt != "" else "image"
 		draw_text(b, KEY_ALT_BASE + u64(item.handle), alt, {size = 13}, tr.w - 8, b.theme.text, tr.x + 4, tr.y + 4)
@@ -256,24 +262,30 @@ draw_canvas :: proc(b: ^Browser, item: ^layout.Item, dst: layout.Rect) {
 		return
 	}
 	canvas := host.canvas_sync(&b.page, n)
-	c, ok := &b.canvases[item.handle]
-	if ok && (c.w != canvas.width || c.h != canvas.height) {
+	draw_pixels(b, item.handle, canvas.width, canvas.height, canvas.pixels, b.page.paint_version, .NEAREST, dst)
+}
+
+// Draws RGBA8 `pixels` into `dst` through the texture cached for node `h`,
+// uploading them again only when `version` changed.
+draw_pixels :: proc(b: ^Browser, h: abi.Handle, w, hgt: int, pixels: []u8, version: u64, scale: sdl.ScaleMode, dst: layout.Rect) {
+	c, ok := &b.textures[h]
+	if ok && (c.w != w || c.h != hgt) {
 		sdl.DestroyTexture(c.tex)
-		delete_key(&b.canvases, item.handle)
+		delete_key(&b.textures, h)
 		ok = false
 	}
 	if !ok {
-		tex := sdl.CreateTexture(b.renderer, .RGBA32, .STREAMING, i32(canvas.width), i32(canvas.height))
+		tex := sdl.CreateTexture(b.renderer, .RGBA32, .STREAMING, i32(w), i32(hgt))
 		if tex == nil {
 			return
 		}
-		sdl.SetTextureScaleMode(tex, .NEAREST)
-		b.canvases[item.handle] = {tex = tex, w = canvas.width, h = canvas.height, version = max(u64)}
-		c = &b.canvases[item.handle]
+		sdl.SetTextureScaleMode(tex, scale)
+		b.textures[h] = {tex = tex, w = w, h = hgt, version = max(u64)}
+		c = &b.textures[h]
 	}
-	if c.version != b.page.paint_version {
-		sdl.UpdateTexture(c.tex, nil, raw_data(canvas.pixels), i32(canvas.width * 4))
-		c.version = b.page.paint_version
+	if c.version != version {
+		sdl.UpdateTexture(c.tex, nil, raw_data(pixels), i32(w * 4))
+		c.version = version
 	}
 	pr := phys(b, dst)
 	sdl.RenderTexture(b.renderer, c.tex, nil, &pr)

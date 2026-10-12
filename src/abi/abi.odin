@@ -33,6 +33,9 @@ Syscall :: enum u32 {
 	Input_Get_Selection = 0x107, // (handle, ptr)          -> 0   writes a Selection
 	Input_Set_Selection = 0x108, // (handle, anchor, caret) -> 0
 	Input_Focus         = 0x109, // (handle)               -> 0   0 takes focus off the page's Inputs
+	// An Image's picture: an encoded PNG or baseline JPEG, decoded by the
+	// browser. len 0 clears it.
+	Image_Set_Data      = 0x10A, // (handle, ptr, len)     -> 0
 
 	// 0x200 canvas. Colours are 0xRRGGBBAA; pixels are RGBA8, row-major.
 	Canvas_Clear      = 0x200, // (handle, rgba)             -> 0
@@ -90,7 +93,7 @@ Node_Kind :: enum u32 {
 	Link      = 4,
 	Button    = 5,
 	Input     = 6,
-	Image     = 7,
+	Image     = 7, // a picture set with Image_Set_Data; inline inside a paragraph
 	Canvas    = 8,
 	List      = 9,
 	List_Item = 10,
@@ -194,6 +197,9 @@ MAX_ATTR_LEN   :: 64 * 1024
 MAX_RANDOM_LEN :: 64 * 1024
 MAX_NODES      :: 100_000
 MAX_CANVAS_DIM :: 4096
+MAX_IMAGE_BYTES :: 16 * 1024 * 1024  // encoded
+MAX_IMAGE_DIM   :: 4096
+MAX_IMAGE_TOTAL :: 256 * 1024 * 1024 // decoded RGBA, all of a page's images together
 MAX_STORAGE_KEY   :: 256
 MAX_STORAGE_VALUE :: 1024 * 1024
 MAX_STORAGE_QUOTA :: 16 * 1024 * 1024 // larger manifest requests are capped

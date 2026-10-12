@@ -10,7 +10,7 @@ import "../../field"
 import "../../host"
 import "../../layout"
 
-INTERACTIVE :: bit_set[abi.Node_Kind]{.Button, .Link, .Input, .Canvas}
+INTERACTIVE :: bit_set[abi.Node_Kind]{.Button, .Link, .Input, .Text_Area, .Canvas}
 
 modifiers :: proc(mod: sdl.Keymod) -> abi.Modifiers {
 	m: abi.Modifiers
@@ -45,8 +45,11 @@ set_focus :: proc(b: ^Browser, h: abi.Handle) {
 		return
 	}
 	b.focus = h
-	b.input.scroll_x = 0
-	if n := host.node_get(&b.page, h); n != nil && n.kind == .Input {
+	b.input.scroll_x, b.input.scroll_y, b.input.seen_caret = 0, 0, -1
+	b.input.goal_x = nil
+	b.input.multiline = false
+	if n := host.node_get(&b.page, h); n != nil && n.kind in abi.EDITABLE {
+		b.input.multiline = n.kind == .Text_Area
 		field.set_text(&b.input, n.text)
 		if n.selection_set {
 			// The page placed the selection before the user got here.
@@ -70,12 +73,12 @@ update_text_input :: proc(b: ^Browser) {
 	}
 }
 
-// Moves focus to the next (or previous) Input in document order.
+// Moves focus to the next (or previous) Input or Text_Area in document order.
 cycle_focus :: proc(b: ^Browser, backwards: bool) {
 	inputs := make([dynamic]abi.Handle, context.temp_allocator)
 	current := -1
 	for item in b.lay.items {
-		if item.kind == .Input {
+		if item.kind in abi.EDITABLE {
 			if item.handle == b.focus {
 				current = len(inputs)
 			}
@@ -115,7 +118,7 @@ click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, middle := false, clic
 		if layout.rect_contains(find_field_inner(b, CHROME_HEIGHT + vh), x, y) || b.find_focus {
 			b.find_focus = true
 			update_text_input(b)
-			field_press(b, .Find, x, mods, clicks)
+			field_press(b, .Find, x, y, mods, clicks)
 		}
 		return
 	}
@@ -150,9 +153,10 @@ click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, middle := false, clic
 		clear_selection(b)
 	}
 	item := b.lay.items[target]
-	set_focus(b, item.handle if item.kind == .Input else abi.INVALID_HANDLE)
-	if item.kind == .Input {
-		field_press(b, .Input, x, mods, clicks)
+	editable := item.kind in abi.EDITABLE
+	set_focus(b, item.handle if editable else abi.INVALID_HANDLE)
+	if editable {
+		field_press(b, .Input, x, y, mods, clicks)
 	}
 	origin := item.text_rect if item.kind == .Canvas else item.rect
 	push_event(b, abi.Event {
@@ -178,7 +182,7 @@ hover :: proc(b: ^Browser, x, y: f32) {
 				href = b.lay.items[link].href
 				cursor = .POINTER
 			} else if t := layout.find_ancestor(&b.lay, hit, INTERACTIVE); t >= 0 {
-				cursor = .TEXT if b.lay.items[t].kind == .Input else .POINTER
+				cursor = .TEXT if b.lay.items[t].kind in abi.EDITABLE else .POINTER
 			}
 		}
 	}
@@ -194,7 +198,7 @@ hover :: proc(b: ^Browser, x, y: f32) {
 // when the pointer leaves the content area.
 drag :: proc(b: ^Browser, x, y: f32) {
 	if b.field_drag != .None {
-		field_drag_to(b, x)
+		field_drag_to(b, x, y)
 		return
 	}
 	if !b.selecting {
@@ -253,7 +257,7 @@ browser_shortcut :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers) -> 
 		set_message(b, "copied the selection")
 	case ctrl && key == 'v' && focused_field(b) != .None:
 		// A paste arrives like typing, so a page Input sees Text events.
-		if text, ok := clipboard_line(); ok {
+		if text, ok := clipboard_text(focused_field(b) == .Input && b.input.multiline); ok {
 			handle_text(b, text, typing = false)
 		}
 	case:
@@ -285,7 +289,7 @@ handle_key :: proc(b: ^Browser, e: sdl.KeyboardEvent) {
 		}
 		return
 	}
-	if !e.down && focused_field(b) == .Input && is_edit_key(e.key, mods) {
+	if !e.down && focused_field(b) == .Input && is_edit_key(e.key, mods, b.input.multiline) {
 		return // the page saw neither the press nor this release
 	}
 	if e.down {
@@ -304,6 +308,10 @@ handle_key :: proc(b: ^Browser, e: sdl.KeyboardEvent) {
 		case focused_field(b) == .Input:
 			// Editing and caret keys belong to the browser; the page sees the
 			// result as a Change event.
+			if b.input.multiline && is_enter(e.key) && .Ctrl not_in mods {
+				handle_text(b, "\n") // Ctrl+Enter goes on to the page
+				return
+			}
 			if handled, changed := field_key(b, &b.input, e.key, mods); handled {
 				if changed {
 					commit_input(b)
@@ -362,11 +370,20 @@ handle_text :: proc(b: ^Browser, text: string, typing := true) {
 	}
 }
 
+is_enter :: proc(key: sdl.Keycode) -> bool {
+	return key == sdl.K_RETURN || key == sdl.K_RETURN2 || key == sdl.K_KP_ENTER
+}
+
 // Keys that field_key handles, so their release is not passed on either.
-is_edit_key :: proc(key: sdl.Keycode, mods: abi.Modifiers) -> bool {
+// A Text_Area also keeps the line keys and Enter (but not Ctrl+Enter).
+is_edit_key :: proc(key: sdl.Keycode, mods: abi.Modifiers, multiline := false) -> bool {
 	switch key {
 	case sdl.K_LEFT, sdl.K_RIGHT, sdl.K_HOME, sdl.K_END, sdl.K_BACKSPACE, sdl.K_DELETE:
 		return true
+	case sdl.K_UP, sdl.K_DOWN, sdl.K_PAGEUP, sdl.K_PAGEDOWN:
+		return multiline
+	case sdl.K_RETURN, sdl.K_RETURN2, sdl.K_KP_ENTER:
+		return multiline && .Ctrl not_in mods
 	case 'a', 'c', 'x', 'v', 'y', 'z':
 		return .Ctrl in mods
 	}

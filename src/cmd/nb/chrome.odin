@@ -94,7 +94,7 @@ toolbar_click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, clicks: int) 
 		reload(b)
 	case layout.rect_contains(address_rect(b), x, y):
 		if b.address_focus {
-			field_press(b, .Address, x, mods, clicks)
+			field_press(b, .Address, x, y, mods, clicks)
 		} else {
 			set_address_focus(b, true) // the first click selects the whole location
 		}

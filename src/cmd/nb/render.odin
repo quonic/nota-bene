@@ -7,6 +7,7 @@ import "core:strings"
 import sdl "vendor:sdl3"
 import ttf "vendor:sdl3/ttf"
 
+import "../../abi"
 import "../../field"
 import "../../host"
 import "../../layout"
@@ -164,7 +165,7 @@ draw_item :: proc(b: ^Browser, item: ^layout.Item, index: int, dy: f32) {
 	if st.background.a > 0 {
 		fill_rect(b, r, st.background)
 	}
-	focused := item.kind == .Input && item.handle == b.focus && !b.address_focus
+	focused := item.kind in abi.EDITABLE && item.handle == b.focus && !b.address_focus
 	if focused {
 		stroke_rect(b, r, b.theme.focus, 2)
 	} else if st.border.a > 0 {
@@ -188,6 +189,12 @@ draw_item :: proc(b: ^Browser, item: ^layout.Item, index: int, dy: f32) {
 		} else {
 			draw_field(b, u64(item.handle), item.text, st.font, st.color, inner, tr.y)
 		}
+		content := content_clip(b)
+		sdl.SetRenderClipRect(b.renderer, &content)
+		return
+	case .Text_Area:
+		// Wrapped lines, scrolled inside the box while focused.
+		draw_area(b, item, r, &b.input if focused && sync_input(b) else nil)
 		content := content_clip(b)
 		sdl.SetRenderClipRect(b.renderer, &content)
 		return

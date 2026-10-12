@@ -133,7 +133,7 @@ style_for :: proc(n: ^host.Node, theme: Theme) -> Style {
 		st.padding = 8
 		st.background = theme.button
 		st.border = theme.button_edge
-	case .Input:
+	case .Input, .Text_Area:
 		st.padding = 8
 		st.background = theme.input
 		st.border = theme.input_edge

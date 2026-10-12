@@ -25,7 +25,7 @@ CURRENT_MATCH_COLOR :: layout.Color{0xFF, 0xA9, 0x4D, 0xFF}
 // (edited by the browser) and image alt text.
 @(private="file")
 is_text_item :: proc(item: ^layout.Item) -> bool {
-	return len(item.text) > 0 && item.kind != .Input && item.kind != .Image && item.kind != .Canvas
+	return len(item.text) > 0 && item.kind not_in abi.EDITABLE && item.kind != .Image && item.kind != .Canvas
 }
 
 item_index_of :: proc(b: ^Browser, h: abi.Handle) -> int {

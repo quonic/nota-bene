@@ -10,12 +10,18 @@ import "../../field"
 import "../../host"
 import "../../layout"
 
-// A one-line text field drawn by the browser: the address bar, the find bar
-// or the focused page Input. Editing is in package field; this adds what
-// drawing needs.
+// A text field drawn by the browser: the address bar, the find bar or the
+// focused page Input or Text_Area. Editing is in package field; this adds
+// what drawing needs.
 Text_Field :: struct {
 	using edit: field.Field,
 	scroll_x:   f32, // how far the text is scrolled left to keep the caret in view
+	// Text_Area only: the text wraps, Enter inserts a newline and the lines
+	// scroll up by `scroll_y`. Up and Down keep to column `goal_x`.
+	multiline:  bool,
+	scroll_y:   f32,
+	seen_caret: int, // the caret offset last scrolled into view
+	goal_x:     Maybe(f32),
 }
 
 Field_Target :: enum {
@@ -64,6 +70,11 @@ field_geometry :: proc(b: ^Browser, t: Field_Target) -> (f: ^Text_Field, key: u6
 field_key :: proc(b: ^Browser, f: ^Text_Field, key: sdl.Keycode, mods: abi.Modifiers) -> (handled, changed: bool) {
 	e := &f.edit
 	ctrl, shift := .Ctrl in mods, .Shift in mods
+	if f.multiline && area_key(b, f, key, mods) {
+		b.dirty = true
+		return true, false
+	}
+	f.goal_x = nil
 	handled = true
 	switch {
 	case key == sdl.K_LEFT:
@@ -100,16 +111,18 @@ field_key :: proc(b: ^Browser, f: ^Text_Field, key: sdl.Keycode, mods: abi.Modif
 	return
 }
 
-// The clipboard's text as one line: fields are single-line, so newlines
-// become spaces.
-clipboard_line :: proc() -> (string, bool) {
+// The clipboard's text. For a one-line field (all but a Text_Area),
+// newlines become spaces.
+clipboard_text :: proc(multiline: bool) -> (string, bool) {
 	raw := sdl.GetClipboardText()
 	if raw == nil {
 		return "", false
 	}
 	defer sdl.free(raw)
 	pasted, _ := strings.replace_all(string(cstring(raw)), "\r", "", context.temp_allocator)
-	pasted, _ = strings.replace_all(pasted, "\n", " ", context.temp_allocator)
+	if !multiline {
+		pasted, _ = strings.replace_all(pasted, "\n", " ", context.temp_allocator)
+	}
 	return pasted, true
 }
 
@@ -117,7 +130,7 @@ clipboard_line :: proc() -> (string, bool) {
 // page changed the text. False if the focus is not on an Input.
 sync_input :: proc(b: ^Browser) -> bool {
 	n := host.node_get(&b.page, b.focus)
-	if n == nil || n.kind != .Input {
+	if n == nil || n.kind not_in abi.EDITABLE {
 		return false
 	}
 	if n.text != field.text(&b.input) {
@@ -144,7 +157,7 @@ sync_selection :: proc(b: ^Browser) {
 		// The address and find bars keep their focus: the request is dropped,
 		// so the caret never jumps away from what the user is typing there.
 		n := host.node_get(&b.page, h)
-		if !b.address_focus && !b.find_focus && (h == abi.INVALID_HANDLE || (n != nil && n.kind == .Input)) {
+		if !b.address_focus && !b.find_focus && (h == abi.INVALID_HANDLE || (n != nil && n.kind in abi.EDITABLE)) {
 			set_focus(b, h)
 			reset_caret_blink(b)
 		}
@@ -163,8 +176,14 @@ sync_selection :: proc(b: ^Browser) {
 	}
 }
 
-// The byte offset in field `t` nearest window x coordinate `x`.
-field_offset_at :: proc(b: ^Browser, t: Field_Target, x: f32) -> (offset: int, ok: bool) {
+// The byte offset in field `t` nearest window point (x, y). Only a
+// Text_Area looks at y.
+field_offset_at :: proc(b: ^Browser, t: Field_Target, x, y: f32) -> (offset: int, ok: bool) {
+	if t == .Input && b.input.multiline {
+		a := focused_area(b) or_return
+		top := a.inner.y + CHROME_HEIGHT - b.scroll_y - b.input.scroll_y
+		return area_offset_at(b, a, x - a.inner.x, y - top), true
+	}
 	f, key, font, left := field_geometry(b, t) or_return
 	if c := cached_text(b, key, field.text(&f.edit), font, 0); c != nil {
 		offset, _ = text_offset_at(c, i32((x - left + f.scroll_x) * b.scale), 0)
@@ -174,8 +193,8 @@ field_offset_at :: proc(b: ^Browser, t: Field_Target, x: f32) -> (offset: int, o
 
 // Mouse down in field `t`: places the caret, extends the selection with
 // Shift, selects a word on a double click. Dragging then extends it.
-field_press :: proc(b: ^Browser, t: Field_Target, x: f32, mods: abi.Modifiers, clicks: int) {
-	offset, ok := field_offset_at(b, t, x)
+field_press :: proc(b: ^Browser, t: Field_Target, x, y: f32, mods: abi.Modifiers, clicks: int) {
+	offset, ok := field_offset_at(b, t, x, y)
 	if !ok {
 		return
 	}
@@ -187,12 +206,13 @@ field_press :: proc(b: ^Browser, t: Field_Target, x: f32, mods: abi.Modifiers, c
 	} else {
 		field.set_caret(&f.edit, offset, extend = .Shift in mods)
 	}
+	f.goal_x = nil
 	b.field_drag = t
 	b.dirty = true
 }
 
-field_drag_to :: proc(b: ^Browser, x: f32) {
-	offset, ok := field_offset_at(b, b.field_drag, x)
+field_drag_to :: proc(b: ^Browser, x, y: f32) {
+	offset, ok := field_offset_at(b, b.field_drag, x, y)
 	if !ok {
 		return
 	}

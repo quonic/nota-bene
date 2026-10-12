@@ -196,7 +196,7 @@ write_event :: proc(p: ^Page, ptr: u64, ev: abi.Event) {
 // sends the page a Change event for it.
 page_input_edit :: proc(p: ^Page, h: abi.Handle, text: string) {
 	n := node_get(p, h)
-	if n == nil || n.kind != .Input {
+	if n == nil || n.kind not_in abi.EDITABLE {
 		return
 	}
 	node_set_text(p, h, text)
@@ -207,7 +207,7 @@ page_input_edit :: proc(p: ^Page, h: abi.Handle, text: string) {
 // the page a Select event if they moved.
 page_input_select :: proc(p: ^Page, h: abi.Handle, anchor, caret: int) {
 	n := node_get(p, h)
-	if n == nil || n.kind != .Input || (n.anchor == anchor && n.caret == caret) {
+	if n == nil || n.kind not_in abi.EDITABLE || (n.anchor == anchor && n.caret == caret) {
 		return
 	}
 	n.anchor, n.caret = anchor, caret

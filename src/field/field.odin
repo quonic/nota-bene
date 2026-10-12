@@ -1,6 +1,7 @@
-// Package field edits one line of text: a caret, a selection and undo. It
-// knows nothing about fonts or windows, so the address bar, the find bar and
-// page Inputs share it, and it is tested without graphics.
+// Package field edits a run of text: a caret, a selection and undo. It
+// knows nothing about fonts or windows (lines that wrap are the browser's
+// business), so the address bar, the find bar, page Inputs and Text_Areas
+// share it, and it is tested without graphics.
 package field
 
 import "core:strings"

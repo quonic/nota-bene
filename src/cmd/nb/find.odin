@@ -49,7 +49,7 @@ refresh_matches :: proc(b: ^Browser, scroll := true) {
 		return
 	}
 	for &item in b.lay.items {
-		if len(item.text) == 0 || item.kind == .Input || item.kind == .Image || item.kind == .Canvas {
+		if len(item.text) == 0 || item.kind in abi.EDITABLE || item.kind == .Image || item.kind == .Canvas {
 			continue
 		}
 		for m in search.find_all(item.text, query) {

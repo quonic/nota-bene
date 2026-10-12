@@ -99,7 +99,12 @@ Node_Kind :: enum u32 {
 	Emphasis  = 11, // italic
 	Strong    = 12, // bold
 	Code      = 13, // monospace
+	Text_Area = 14, // multi-line Input: wraps, Enter inserts a newline
 }
+
+// Kinds the browser edits: they take the Input syscalls and send Change and
+// Select events.
+EDITABLE :: bit_set[Node_Kind]{.Input, .Text_Area}
 
 // Attributes are semantic or layout hints. Values are UTF-8 strings; the
 // browser decides how to honour them, and user settings may override them.

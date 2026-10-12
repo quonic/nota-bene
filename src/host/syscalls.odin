@@ -408,7 +408,7 @@ input_node :: proc(p: ^Page, h: abi.Handle) -> (^Node, abi.Errno) {
 	if n == nil {
 		return nil, .BADH
 	}
-	if n.kind != .Input {
+	if n.kind not_in abi.EDITABLE {
 		return nil, .INVAL
 	}
 	return n, .OK

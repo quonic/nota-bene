@@ -59,6 +59,9 @@ VIEWPORT_MARGIN :: 16
 
 IMAGE_PLACEHOLDER :: [2]f32{120, 80}
 
+// How many lines tall a Text_Area is without a Height attribute.
+TEXT_AREA_LINES :: 4
+
 @(private)
 Context :: struct {
 	page:  ^host.Page,
@@ -157,6 +160,16 @@ layout_node :: proc(ctx: ^Context, h: abi.Handle, parent: int, x, y, avail: f32,
 		text_rect = {cx, cy, tw, line_h}
 		content_w = inner
 		cy += line_h
+
+	case .Text_Area:
+		// Wraps at the box width. The box is a fixed number of lines tall
+		// (or Height); longer text scrolls inside it.
+		_, line_h := ctx.m.measure(ctx.m.data, "", st.font, 0)
+		_, th := ctx.m.measure(ctx.m.data, n.text, st.font, inner)
+		text_rect = {cx, cy, inner, max(th, line_h)}
+		wrap = inner
+		content_w = inner
+		cy += TEXT_AREA_LINES * line_h
 
 	case .Canvas:
 		cw, ch := host.canvas_wanted_size(n)

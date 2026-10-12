@@ -1,6 +1,7 @@
 // Form demo: an Input the browser edits for the page, Change events,
 // reading the value back with Node_Get_Text, and following and placing the
-// selection with Select events, Input_Set_Selection and Input_Focus.
+// selection with Select events, Input_Set_Selection and Input_Focus. A
+// Text_Area takes several lines; Ctrl+Enter in it sends the message.
 package main
 
 import "core:strconv"
@@ -28,6 +29,13 @@ main :: proc() {
 	nb.set_attr(count, .Color, "#6b7280")
 	caret := nb.el(.Text, root, "caret at 0")
 	nb.set_attr(caret, .Color, "#6b7280")
+
+	nb.el(.Paragraph, root, "Write a message: Enter starts a new line, Ctrl+Enter sends it.")
+	message := nb.el(.Text_Area, root)
+	nb.set_attr(message, .Label, "Message")
+	nb.set_attr(message, .Width, "420")
+	lines := nb.el(.Text, root, "1 line")
+	nb.set_attr(lines, .Color, "#6b7280")
 	result := nb.el(.Paragraph, root)
 	nb.set_attr(result, .Font_Size, "20")
 
@@ -43,12 +51,18 @@ main :: proc() {
 		}
 		#partial switch ev.kind {
 		case .Change:
+			if ev.handle == message {
+				nb.set_text(lines, line_count(message))
+				break
+			}
 			name, _ := nb.get_text(input, context.temp_allocator)
 			buf: [32]u8
 			n := strconv.write_int(buf[:], i64(utf8.rune_count_in_string(name)), 10)
 			nb.set_text(count, strings.concatenate({n, " characters"}, context.temp_allocator))
 		case .Select:
-			show_selection(input, caret, int(ev.a), int(ev.b))
+			if ev.handle == input {
+				show_selection(input, caret, int(ev.a), int(ev.b))
+			}
 		case .Click:
 			if ev.handle == greet {
 				say_hello(input, result)
@@ -60,8 +74,15 @@ main :: proc() {
 				show_selection(input, caret, anchor, at)
 			}
 		case .Key:
-			if ev.handle == input && ev.a == i64(nb.Key.Enter) && ev.c == 1 {
+			if ev.a != i64(nb.Key.Enter) || ev.c != 1 {
+				break
+			}
+			if ev.handle == input {
 				say_hello(input, result)
+			} else if ev.handle == message && .Ctrl in transmute(nb.Modifiers)ev.b {
+				nb.set_text(result, strings.concatenate({"Sent a message of ", line_count(message)}, context.temp_allocator))
+				nb.set_text(message, "")
+				nb.set_text(lines, "1 line")
 			}
 		case .Quit:
 			return
@@ -82,6 +103,17 @@ show_selection :: proc(input, caret: nb.Handle, anchor, at: int) {
 		s = strings.concatenate({s, ", ", sel, " selected"}, context.temp_allocator)
 	}
 	nb.set_text(caret, s)
+}
+
+// "N lines" for the text in a Text_Area.
+line_count :: proc(area: nb.Handle) -> string {
+	text, _ := nb.get_text(area, context.temp_allocator)
+	n := strings.count(text, "\n") + 1
+	if n == 1 {
+		return "1 line"
+	}
+	buf: [32]u8
+	return strings.concatenate({strconv.write_int(buf[:], i64(n), 10), " lines"}, context.temp_allocator)
 }
 
 say_hello :: proc(input, result: nb.Handle) {

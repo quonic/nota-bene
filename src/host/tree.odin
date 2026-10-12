@@ -115,7 +115,7 @@ node_set_text :: proc(p: ^Page, h: abi.Handle, text: string) -> abi.Errno {
 	}
 	delete(n.text, p.allocator)
 	n.text = strings.clone(text, p.allocator)
-	if n.kind == .Input {
+	if n.kind in abi.EDITABLE {
 		// Kept where they still fit, as the browser's own field does.
 		n.anchor = snap_offset(n.text, n.anchor)
 		n.caret = snap_offset(n.text, n.caret)

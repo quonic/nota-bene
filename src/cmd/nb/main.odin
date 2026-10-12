@@ -44,6 +44,7 @@ options:
 keys: Ctrl+L / F6 address bar, F5 / Ctrl+R reload, Alt+Left back,
       Tab next input, F12 dump the view tree; in text fields, Shift and Ctrl
       with the arrows select and move by word, Ctrl+Z / Ctrl+Y undo and redo;
+      in a text area, Enter adds a line and Ctrl+Enter goes to the page;
       on page text, Shift+arrows, Home and End extend the selection
 `
 
@@ -324,7 +325,9 @@ handle_event :: proc(b: ^Browser, ev: sdl.Event) {
 			click(b, ev.button.x, ev.button.y, modifiers(sdl.GetModState()), middle = true)
 		}
 	case .MOUSE_WHEEL:
-		scroll_by(b, -ev.wheel.y * SCROLL_STEP)
+		if !area_wheel(b, ev.wheel.mouse_x, ev.wheel.mouse_y, -ev.wheel.y * SCROLL_STEP) {
+			scroll_by(b, -ev.wheel.y * SCROLL_STEP)
+		}
 	case .KEY_DOWN, .KEY_UP:
 		if ev.type == .KEY_DOWN {
 			reset_caret_blink(b)

@@ -164,6 +164,29 @@ test_canvas_and_input :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_text_area :: proc(t: ^testing.T) {
+	p: host.Page
+	new_page(&p)
+	defer host.page_destroy(&p)
+	root := node(&p, .Box)
+	node(&p, .Text_Area, root, strings.repeat("word ", 60, context.temp_allocator))
+	sized := node(&p, .Text_Area, root, "hi")
+	host.node_set_attr(&p, sized, .Height, "50")
+	p.root = root
+
+	r: layout.Result
+	defer layout.result_destroy(&r)
+	layout.layout(&p, 400, M, layout.DEFAULT_THEME, &r)
+	area := r.items[1]
+	// Four 20px lines plus padding, however long the text is.
+	expect_rect(t, area.rect, {16, 16, 260, 4 * 20 + 16}, "text area")
+	testing.expect_value(t, area.wrap, 244)
+	testing.expect_value(t, area.text_rect.w, 244)
+	testing.expect(t, area.text_rect.h > 4 * 20, "the text is taller than the box")
+	expect_rect(t, r.items[2].rect, {16, 16 + 96, 260, 50}, "text area with Height")
+}
+
+@(test)
 test_styles :: proc(t: ^testing.T) {
 	p: host.Page
 	new_page(&p)

@@ -1,4 +1,5 @@
-// Input_Get_Selection, Input_Set_Selection and Input_Focus. Run by
+// Input_Get_Selection, Input_Set_Selection and Input_Focus, on an Input and
+// a Text_Area. Run by
 // tests/host, which also checks the node and the focus request left behind.
 #include "test.h"
 
@@ -126,12 +127,41 @@ _start:
 	SYSCALL	SYS_INPUT_FOCUS
 	CHECK	25, a0, 0
 
+	// a Text_Area takes the same calls; offsets run across its lines
+	li	a0, 14			// Text_Area
+	SYSCALL	SYS_NODE_CREATE
+	blez	a0, fail
+	mv	s3, a0
+	mv	a0, s3
+	la	a1, lines		// "a\nb"
+	li	a2, 3
+	SYSCALL	SYS_NODE_SET_TEXT
+	CHECK	26, a0, 0
+	mv	a0, s3
+	li	a1, 3
+	li	a2, 1
+	SYSCALL	SYS_INPUT_SET_SELECTION
+	CHECK	27, a0, 0
+	mv	a0, s3
+	la	a1, sel
+	SYSCALL	SYS_INPUT_GET_SELECTION
+	CHECK	28, a0, 0
+	la	t0, sel
+	ld	t1, 0(t0)
+	CHECK	29, t1, 3
+	ld	t1, 8(t0)
+	CHECK	30, t1, 1
+	mv	a0, s3
+	SYSCALL	SYS_INPUT_FOCUS
+	CHECK	31, a0, E_INVAL		// detached, so the Input keeps the request
+
 	PASS
 fail:
 	FAIL	99
 
 	.section .rodata
 text:	.ascii	"a\303\251!"
+lines:	.ascii	"a\nb"
 
 	.data
 	.balign 16

@@ -128,3 +128,28 @@ test_select_range :: proc(t: ^testing.T) {
 	testing.expect_value(t, f.anchor, 1)
 	testing.expect_value(t, f.caret, 4)
 }
+
+@(test)
+test_newlines :: proc(t: ^testing.T) {
+	f: field.Field
+	defer field.destroy(&f)
+	field.insert(&f, "one", typing = true)
+	field.insert(&f, "\n")
+	field.insert(&f, "two", typing = true)
+	testing.expect_value(t, field.text(&f), "one\ntwo")
+	// A newline separates words like a space does.
+	s := field.text(&f)
+	testing.expect_value(t, field.prev_word(s, len(s)), 4)
+	testing.expect_value(t, field.prev_word(s, 4), 0)
+	testing.expect_value(t, field.next_word(s, 3), 7)
+	start, end := field.word_at(s, 5)
+	testing.expect_value(t, start, 4)
+	testing.expect_value(t, end, 7)
+	// Backspace at the start of a line joins it to the line above.
+	field.set_caret(&f, 4)
+	field.delete_to(&f, .Left)
+	testing.expect_value(t, field.text(&f), "onetwo")
+	field.undo(&f)
+	testing.expect_value(t, field.text(&f), "one\ntwo")
+	testing.expect_value(t, f.caret, 4)
+}

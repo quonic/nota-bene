@@ -322,6 +322,31 @@ test_input_select :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_text_area_edit :: proc(t: ^testing.T) {
+	p: host.Page
+	p.allocator = context.allocator
+	host.handle_table_init(&p.handles, 100)
+	defer host.page_destroy(&p)
+
+	area, _ := host.node_create(&p, .Text_Area)
+	host.page_input_edit(&p, area, "one\ntwo")
+	host.page_input_select(&p, area, 4, 7)
+	n := host.node_get(&p, area)
+	testing.expect_value(t, n.text, "one\ntwo")
+	testing.expect_value(t, len(p.events), 2)
+	if len(p.events) == 2 {
+		testing.expect_value(t, p.events[0].kind, abi.Event_Kind.Change)
+		testing.expect_value(t, p.events[1].kind, abi.Event_Kind.Select)
+		testing.expect_value(t, p.events[1].a, 4)
+		testing.expect_value(t, p.events[1].b, 7)
+	}
+	// Shorter text snaps the selection, across lines as on one.
+	host.node_set_text(&p, area, "one\nt")
+	testing.expect_value(t, n.anchor, 4)
+	testing.expect_value(t, n.caret, 5)
+}
+
+@(test)
 test_selection_syscalls :: proc(t: ^testing.T) {
 	p: host.Page
 	if !load_page(t, &p, fmt.tprintf("%s/selection.c.elf", FIXTURES)) {

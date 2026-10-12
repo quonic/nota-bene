@@ -116,9 +116,8 @@ stop :: proc(srv: ^Server) {
 }
 
 destroy :: proc(srv: ^Server) {
-	for path, c in srv.cache {
-		delete(path)
-		delete(c.encoded)
+	for path in srv.cache {
+		srv.cache[path] = Cached_Bundle{}
 	}
 	delete(srv.cache)
 }

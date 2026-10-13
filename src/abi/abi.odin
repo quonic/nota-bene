@@ -125,6 +125,7 @@ Attr :: enum u32 {
 	Height    = 10,
 	Level     = 11, // Heading level "1".."6"
 	Id        = 12, // page-chosen identifier echoed back in events
+	Dir       = 13, // text direction: "ltr" | "rtl" | "auto" (default: from the first letter)
 }
 
 Event_Kind :: enum u32 {

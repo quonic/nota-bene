@@ -153,3 +153,21 @@ test_newlines :: proc(t: ^testing.T) {
 	testing.expect_value(t, field.text(&f), "one\ntwo")
 	testing.expect_value(t, f.caret, 4)
 }
+
+// Moves step over whole grapheme clusters: emoji sequences and flags.
+@(test)
+test_grapheme_moves :: proc(t: ^testing.T) {
+	f: field.Field
+	defer field.destroy(&f)
+	coder :: "\U0001F469‍\U0001F4BB" // woman technologist: three code points
+	field.set_text(&f, "a" + coder + "\U0001F1EB\U0001F1F7")
+	field.set_caret(&f, 1)
+	field.move(&f, .Right)
+	testing.expect_value(t, f.caret, 1 + len(coder))
+	field.move(&f, .Right)
+	testing.expect_value(t, f.caret, len(field.text(&f))) // the flag is one character
+	field.move(&f, .Left)
+	testing.expect_value(t, f.caret, 1 + len(coder))
+	field.move(&f, .Left)
+	testing.expect_value(t, f.caret, 1)
+}

@@ -93,7 +93,11 @@ test_text_wraps :: proc(t: ^testing.T) {
 	defer layout.result_destroy(&r)
 	layout.layout(&p, 72 + 32, M, layout.DEFAULT_THEME, &r)
 	expect_rect(t, r.items[0].text_rect, {16, 16, 72, 40}, "wrapped text")
-	testing.expect_value(t, r.items[0].wrap, 72)
+	// Plain text is laid out as fragments too; the space at the break hangs.
+	testing.expect_value(t, len(r.fragments), 2)
+	expect_rect(t, r.fragments[0].rect, {16, 16, 72, 20}, "aaaa bbbb")
+	expect_rect(t, r.fragments[1].rect, {16, 36, 32, 20}, "cccc")
+	testing.expect_value(t, r.fragments[1].start, 10)
 }
 
 @(test)
@@ -226,6 +230,7 @@ test_row_centres_vertically :: proc(t: ^testing.T) {
 	layout.layout(&p, 400, M, layout.DEFAULT_THEME, &r)
 	expect_rect(t, r.items[2].rect, {48, 24, 40, 20}, "label")
 	expect_rect(t, r.items[2].text_rect, {48, 24, 40, 20}, "label text")
+	expect_rect(t, r.fragments[r.items[2].frag_first].rect, {48, 24, 40, 20}, "label fragment moves with it")
 	testing.expect_value(t, r.items[0].rect.h, 36)
 }
 
@@ -313,7 +318,10 @@ test_mixed_children_stay_blocks :: proc(t: ^testing.T) {
 	r: layout.Result
 	defer layout.result_destroy(&r)
 	layout.layout(&p, 400, M, layout.DEFAULT_THEME, &r)
-	testing.expect_value(t, len(r.fragments), 0)
+	// Each block's own text is its own paragraph.
+	testing.expect_value(t, len(r.fragments), 2)
+	testing.expect_value(t, r.items[0].frag_count, 1)
+	testing.expect_value(t, r.items[1].frag_count, 1)
 	testing.expect_value(t, r.items[1].inline_root, -1)
 }
 
@@ -405,4 +413,72 @@ test_image_link :: proc(t: ^testing.T) {
 	l := layout.find_ancestor(&r, i, {.Link})
 	testing.expect(t, l >= 0 && r.items[l].href == "next.elf")
 	testing.expect_value(t, layout.hit_test(&r, 16 + 32 + 130, 16 + 40), 0) // past the image: the paragraph
+}
+
+// A Hebrew first letter makes a right-to-left paragraph: its lines are
+// aligned right and its runs reversed, while fragments stay in byte order.
+// (The fake measurer counts bytes: each Hebrew letter is 16 px.)
+@(test)
+test_rtl_paragraph :: proc(t: ^testing.T) {
+	p: host.Page
+	new_page(&p)
+	defer host.page_destroy(&p)
+	p.root = node(&p, .Paragraph, text = "אב cd")
+
+	r: layout.Result
+	defer layout.result_destroy(&r)
+	layout.layout(&p, 400, M, layout.DEFAULT_THEME, &r)
+	testing.expect(t, r.items[0].rtl)
+	// The space at the edge of the Hebrew run is a fragment of its own.
+	testing.expect_value(t, len(r.fragments), 3)
+	he, sp, la := r.fragments[0], r.fragments[1], r.fragments[2]
+	testing.expect_value(t, [2]int{he.start, he.end}, [2]int{0, 4})
+	testing.expect_value(t, [2]int{sp.start, sp.end}, [2]int{4, 5})
+	testing.expect_value(t, [2]int{la.start, la.end}, [2]int{5, 7})
+	testing.expect(t, he.rtl && he.font.rtl && sp.rtl && !la.rtl)
+	// Visually "cd", the space, then the Hebrew, ending at the right edge (16 + 368).
+	expect_rect(t, la.rect, {328, 16, 16, 20}, "cd, on the left")
+	expect_rect(t, sp.rect, {344, 16, 8, 20}, "space")
+	expect_rect(t, he.rect, {352, 16, 32, 20}, "Hebrew, on the right")
+}
+
+// Dir=rtl is inherited, and overrides a Latin first letter.
+@(test)
+test_dir_attribute :: proc(t: ^testing.T) {
+	p: host.Page
+	new_page(&p)
+	defer host.page_destroy(&p)
+	root := node(&p, .Box)
+	host.node_set_attr(&p, root, .Dir, "rtl")
+	node(&p, .Paragraph, root, "ab cd")
+	ltr := node(&p, .Paragraph, root, "ef")
+	host.node_set_attr(&p, ltr, .Dir, "ltr")
+	p.root = root
+
+	r: layout.Result
+	defer layout.result_destroy(&r)
+	layout.layout(&p, 400, M, layout.DEFAULT_THEME, &r)
+	testing.expect(t, r.items[1].rtl)
+	testing.expect_value(t, r.items[1].frag_count, 1)
+	expect_rect(t, r.fragments[r.items[1].frag_first].rect, {344, 16, 40, 20}, "right aligned")
+	testing.expect(t, !r.items[2].rtl)
+	testing.expect_value(t, r.fragments[r.items[2].frag_first].rect.x, 16)
+}
+
+// A word wider than the line breaks between its characters.
+@(test)
+test_long_word_splits :: proc(t: ^testing.T) {
+	p: host.Page
+	new_page(&p)
+	defer host.page_destroy(&p)
+	p.root = node(&p, .Paragraph, text = "abcdefghij")
+
+	r: layout.Result
+	defer layout.result_destroy(&r)
+	layout.layout(&p, 32 + 32, M, layout.DEFAULT_THEME, &r)
+	testing.expect_value(t, len(r.fragments), 3)
+	expect_rect(t, r.fragments[0].rect, {16, 16, 32, 20}, "abcd")
+	expect_rect(t, r.fragments[1].rect, {16, 36, 32, 20}, "efgh")
+	expect_rect(t, r.fragments[2].rect, {16, 56, 16, 20}, "ij")
+	testing.expect_value(t, r.fragments[2].start, 8)
 }

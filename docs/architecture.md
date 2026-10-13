@@ -30,7 +30,8 @@ and no JavaScript runtime.
 | `src/vm`        | `vm`     | User-mode RV64GC interpreter. `run(cpu, budget)` stops on budget, `ecall`, `ebreak` or fault. It knows nothing about syscalls.                                                                        |
 | `src/loader`    | `loader` | Validates and maps an ELF64 executable, sets up the stack, parses the `.nb_manifest` section.                                                                                                         |
 | `src/host`      | `host`   | The page object: drives the VM, dispatches syscalls, owns the handle table and the view tree, and checks fetches against the manifest. No I/O; front ends plug in through callbacks (logging, fetch). |
-| `src/field`     | `field`  | Text editing: caret, selection, word moves, undo. It works on bytes, and leaves wrapped lines to `nb`. Used by `nb` for the address bar, the find bar, page Inputs and Text_Areas.                    |
+| `src/field`     | `field`  | Text editing: caret, selection, moves by grapheme cluster and by word, undo. It works on bytes, and leaves wrapped lines to `nb`. Used by `nb` for the address bar, the find bar, page Inputs and Text_Areas. |
+| `src/text`      | `text`   | Unicode text segmentation over kb_text_shape: line break opportunities (UAX #14), grapheme clusters (UAX #29), and bidirectional runs and reordering (UAX #9). No fonts, so it is unit tested.  |
 | `src/layout`    | `layout` | Turns the view tree into positioned boxes. Text measurement is pluggable, so it is tested without graphics.                                                                                           |
 | `src/cmd/nb`    | `main`   | The browser window: SDL3 for windowing, input and drawing, SDL3_ttf (FreeType and HarfBuzz) for text.                                                                                                 |
 | `src/cmd/nbrun` | `main`   | Headless runner for development and tests.                                                                                                                                                            |
@@ -109,8 +110,8 @@ cooperation. A `Canvas` node will give pages raw drawing where they need it.
   child does not fit. Items on a row line are centred vertically.
 - In a column, children fill the available width. In a row, they shrink to
   their content.
-- A node's own text is wrapped to its inner width and placed before its
-  children.
+- A node's own text is laid out as a paragraph at its inner width and
+  placed before its children.
 - Browser defaults per kind set the look: heading sizes, link colour and
   underline, button and input boxes, list indentation and bullets. An Input
   is one line tall; a Text_Area is four lines (or `Height`) and its text
@@ -120,16 +121,39 @@ cooperation. A `Canvas` node will give pages raw drawing where they need it.
 - **Inline formatting.** A Paragraph, Heading or List_Item whose children are
   all inline (Text, Link, Emphasis, Strong, Code, Image) is laid out by
   `src/layout/inline.odin`:
-  1. Its runs are split into words and spaces, each measured in its own font.
-     An Image is a single word the size of its picture.
-  2. Lines are broken greedily at spaces, across style changes.
-  3. The result is a list of _fragments_: one node's text, on one line, in
-     one style.
+  1. Its runs are joined into one string, with U+FFFC standing in for each
+     Image, and `src/text` finds the line break opportunities and the
+     direction runs across the whole paragraph.
+  2. The string is cut into pieces at every break opportunity, style change
+     and direction change, and each piece is measured in its own font and
+     direction. An Image is one piece the size of its picture.
+  3. Lines are filled greedily, one break opportunity at a time. Whitespace
+     at the end of a line hangs past the edge. A word wider than the line
+     is broken between grapheme clusters.
+  4. Each line is reordered by UAX #9 rules L1 and L2 and, in a
+     right-to-left paragraph, aligned right.
+  5. The result is a list of _fragments_: one node's text, on one line, in
+     one style and one direction. Fragments are stored in logical order, so
+     an item's fragments stay together; their rectangles are where they
+     appear on screen.
 
   Rendering, hit-testing, selection and find all work per fragment. A link
   that wraps is therefore still one clickable link, and copying a paragraph
   gives back its exact text. SDL_ttf can only use one font per text object,
   so the line breaking is done here rather than by SDL_ttf.
+
+  The same paragraph layout (`src/layout/para.odin`) serves a block's own
+  text, Inputs, Text_Areas and the browser's address and find bars, so all
+  text breaks and orders the same way.
+
+  kb_text_shape resolves characters to left-to-right or right-to-left, not
+  to full embedding levels. The browser therefore uses three levels: 0, 1
+  for right-to-left text, and 2 for left-to-right text inside a
+  right-to-left paragraph. This handles mixed Hebrew, Arabic, Latin and
+  numbers. The explicit direction controls (embeddings, overrides and
+  isolates) are not supported, and digits after right-to-left text in a
+  left-to-right paragraph stay where they are rather than joining the
+  right-to-left run.
 
 `nb` keeps the layout until `Page.tree_version` changes or the window width
 changes. It only repaints when something changed, including canvas pixels
@@ -226,8 +250,9 @@ contains pages written directly in assembly.
      - Ctrl+F matches case-insensitively and scrolls each match into view.
      - Positions are kept as (node handle, byte offset), so they survive
        re-layout.
-     - Character positions and range rectangles come from SDL_ttf, so they
-       follow the real shaped text.
+     - Character positions and range rectangles come from SDL_ttf, one
+       fragment at a time, so they follow the real shaped text in either
+       direction.
    - **Per-site storage** with quotas from the manifest, keyed by the
      server's verified key.
 5. **Pages fetch data** (done). `Fetch_Open` and `Fetch_Read` reach only the
@@ -255,9 +280,22 @@ contains pages written directly in assembly.
      fixtures and the example page's pictures. The results are committed, so
      building and testing need no GIMP.
 
+7. **Unicode text** (done). Line breaking per UAX #14 and bidirectional text
+   per UAX #9, from kb_text_shape (`src/text`), for page text and every
+   text field.
+   - **Fonts.** `nb` sets each fragment's direction on its font, so HarfBuzz
+     shapes right-to-left runs and mirrors their brackets. Fallback fonts
+     (Noto Sans Hebrew, Arabic and CJK, then DejaVu Sans) cover scripts the
+     main face lacks.
+   - **The `Dir` attribute** sets a paragraph's direction. Without it, the
+     first letter decides.
+   - **Caret moves** go by grapheme cluster, so an emoji sequence or a flag
+     is one step. Moves and selections stay in logical order.
+   - **Not done.** The explicit direction controls (see the layout notes
+     above) and visual-order caret movement.
+
 Later ideas:
 
-- bidirectional text and line breaking per the Unicode algorithm (kb_text_shape provides both)
 - a history and bookmarks view
 - a visible, keyboard-driven caret on pages (caret browsing, F7)
 - an accessibility bridge: the semantic tree maps directly onto platform accessibility APIs

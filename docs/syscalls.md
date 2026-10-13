@@ -148,13 +148,35 @@ nb.el(.Text, p, ".")
   its line taller, and text sits on its bottom edge. Inside a `Link` it is
   part of the link.
 - **Mixed content stays block layout.** A paragraph that also contains block
-  children (a `Button`, say) lays every child out as a block.
+  children (a `Button`, say) lays every child out as a block. Its own text is
+  a paragraph of its own.
 
 **Attributes:** 0 `Href`, 1 `Alt`, 2 `Label`, 3 `Direction` (`row`|`column`),
 4 `Gap`, 5 `Padding`, 6 `Color` (`#rrggbb`), 7 `Background`, 8 `Font_Size`,
-9 `Width`, 10 `Height`, 11 `Level` (heading 1–6), 12 `Id`.
+9 `Width`, 10 `Height`, 11 `Level` (heading 1–6), 12 `Id`, 13 `Dir`
+(`ltr`|`rtl`|`auto`).
 
-Attributes are hints. The browser, and the user's settings, have the final
+Attributes are hints.
+
+**Text direction and line breaks.** The browser breaks lines where the
+Unicode line breaking algorithm allows: after spaces and hyphens, between
+ideographs in Chinese and Japanese, never before closing punctuation such as
+`。`. A word too long for its line is broken between characters. Right-to-left
+scripts (Hebrew, Arabic) are laid out with the Unicode bidirectional
+algorithm:
+
+- Each block of text is a paragraph whose direction comes from its first
+  letter, so a paragraph that starts in Hebrew runs right to left and is
+  aligned right. Digits and punctuation do not count.
+- `Dir` sets the direction instead: `rtl` or `ltr`, or `auto` for the
+  first-letter rule. Children inherit it, so setting it on the root sets the
+  whole page. A right-to-left `List` puts its bullets on the right. `Dir` on
+  an `Input` or `Text_Area` sets the direction of its text.
+- `Dir` applies to whole paragraphs. On an inline node in a paragraph it has
+  no effect, and the explicit direction control characters (U+202A–U+202E,
+  U+2066–U+2069) are ignored.
+- Selections and the caret follow the text's logical order, so in mixed
+  text a selection may look like several pieces on one line. The browser, and the user's settings, have the final
 say on presentation.
 
 **Input nodes are edited by the browser.** When the user types into a

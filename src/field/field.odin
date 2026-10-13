@@ -8,6 +8,8 @@ import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
+import ustext "../text"
+
 MAX_UNDO :: 100
 
 Move :: enum {
@@ -195,36 +197,16 @@ target :: proc(s: string, pos: int, m: Move) -> int {
 	return pos
 }
 
-// The start of the character before `pos`: one rune plus the combining marks
-// on it, so an accent is never split from its letter.
+// The start of the character before `pos`: a whole grapheme cluster, so an
+// accent is never split from its letter, nor an emoji sequence or a flag
+// from its parts.
 prev_char :: proc(s: string, pos: int) -> int {
-	pos := pos
-	for pos > 0 {
-		r, n := utf8.decode_last_rune_in_string(s[:pos])
-		pos -= n
-		if !unicode.is_combining(r) {
-			break
-		}
-	}
-	return pos
+	return ustext.prev_grapheme(s, pos)
 }
 
-// The end of the character at `pos`, with its combining marks.
+// The end of the character at `pos`, a whole grapheme cluster.
 next_char :: proc(s: string, pos: int) -> int {
-	if pos >= len(s) {
-		return len(s)
-	}
-	_, n := utf8.decode_rune_in_string(s[pos:])
-	pos := pos
-	pos += n
-	for pos < len(s) {
-		r, size := utf8.decode_rune_in_string(s[pos:])
-		if !unicode.is_combining(r) {
-			break
-		}
-		pos += size
-	}
-	return pos
+	return ustext.next_grapheme(s, pos)
 }
 
 // The start of the word before `pos`.

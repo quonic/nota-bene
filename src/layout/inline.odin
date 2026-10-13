@@ -5,15 +5,18 @@ import "../host"
 
 // Inline formatting: a Paragraph, Heading or List_Item whose children are
 // all inline (Text, Link, Emphasis, Strong, Code, Image) flows its own text
-// and theirs as one paragraph, wrapping at spaces across style changes. An
-// Image is one unbreakable box on the line, like a word.
-//
+// and theirs as one paragraph (para.odin), breaking lines where Unicode
+// allows across style changes. An Image is one unbreakable box on the line,
+// like a word. A node with block children lays out its own text the same
+// way, alone.
 //
 // The result is a list of fragments: a fragment is a contiguous slice of
-// one node's text on one line, in one style. Every inline node still gets an
-// Item (for hit testing, links, selection and find); its fragments are
-// items[i].frag_first ..< frag_first + frag_count in Result.fragments. An
-// Image's single fragment is its picture's box, with an empty byte range.
+// one node's text on one line, in one style and one direction. Fragments
+// are stored in logical order; their rectangles are in visual order. Every
+// inline node still gets an Item (for hit testing, links, selection and
+// find); its fragments are items[i].frag_first ..< frag_first + frag_count
+// in Result.fragments. An Image's single fragment is its picture's box,
+// with an empty byte range.
 
 Fragment :: struct {
 	item:       int, // the Item whose node owns the text
@@ -22,6 +25,7 @@ Fragment :: struct {
 	font:       Font,
 	color:      Color,
 	background: Color, // alpha 0 = none
+	rtl:        bool,  // runs right to left
 }
 
 // Does `n` start an inline formatting context?
@@ -30,9 +34,6 @@ is_inline_context :: proc(p: ^host.Page, n: ^host.Node) -> bool {
 	case .Paragraph, .Heading, .List_Item, .Text, .Link, .Emphasis, .Strong, .Code:
 	case:
 		return false
-	}
-	if n.first_child == abi.INVALID_HANDLE {
-		return false // plain text: the simple path wraps it in one piece
 	}
 	return all_inline(p, n)
 }
@@ -57,88 +58,73 @@ Run :: struct {
 	image: ^host.Node, // set for an Image, which has no text
 }
 
+// Lays out the node at item `idx`'s own text, and with `children` its
+// inline children's too, as one paragraph in a box `avail` wide at (x, y).
+// Right-to-left paragraphs are aligned to the right of `avail` when `fill`,
+// else of the widest line. Returns the size used.
 @(private)
-Token :: struct {
-	run:        int,
-	start, end: int, // byte range in the run's text
-	w, h:       f32,
-	kind:       enum u8 {
-		Word,
-		Space,
-		Newline,
-	},
-}
-
-// Lays out the inline content of the node at item `idx` in a box `avail`
-// wide at (x, y). Returns the size used.
-@(private)
-layout_inline :: proc(ctx: ^Context, n: ^host.Node, idx: int, x, y, avail: f32) -> (w, h: f32) {
+layout_inline :: proc(ctx: ^Context, n: ^host.Node, idx: int, x, y, avail: f32, children, fill: bool) -> (w, h: f32) {
 	runs := make([dynamic]Run, context.temp_allocator)
 	container_style := ctx.out.items[idx].style
 	if len(n.text) > 0 {
 		append(&runs, Run{idx, n.text, container_style, nil})
 	}
-	collect_runs(ctx, n, idx, container_style, &runs)
+	if children {
+		collect_runs(ctx, n, idx, container_style, &runs)
+	}
 
-	tokens := make([dynamic]Token, context.temp_allocator)
+	// One string for the whole paragraph, so breaks and directions are
+	// found across style changes. An Image stands in as U+FFFC.
+	sb := make([dynamic]u8, context.temp_allocator)
+	pruns := make([]Para_Run, len(runs), context.temp_allocator)
 	for run, ri in runs {
-		tokenize(ctx, ri, run, avail, &tokens)
+		pr := Para_Run{start = len(sb), font = run.style.font}
+		if run.image != nil {
+			append(&sb, OBJECT_TEXT)
+			pr.object = image_size(run.image, avail)
+			pr.is_object = true
+		} else {
+			append(&sb, run.text)
+		}
+		pr.end = len(sb)
+		pruns[ri] = pr
 	}
 
 	_, base_h := ctx.m.measure(ctx.m.data, "", container_style.font, 0)
-	line_y := y
-	line_x: f32
-	line_h: f32
-	line_start := len(ctx.out.fragments)
-	pending_space := -1 // index of a space token waiting for the next word
-	max_w: f32
+	para: Para
+	para.segs.allocator = context.temp_allocator
+	para.lines.allocator = context.temp_allocator
+	para_layout(ctx.m, string(sb[:]), pruns, {wrap = avail, dir = container_style.text_dir, line_h = base_h}, &para)
+	para_align(&para, avail if fill else para.width)
+	ctx.out.items[idx].rtl = para.rtl
 
-	finish_line :: proc(ctx: ^Context, line_start: int, line_y: ^f32, line_h: ^f32, line_x: ^f32, base_h: f32) {
-		hgt := line_h^ if line_h^ > 0 else base_h
-		// Bottom-align fragments of different heights on the line (smaller
-		// text sits on the same base as larger text).
-		for &f in ctx.out.fragments[line_start:] {
-			f.rect.y = line_y^ + hgt - f.rect.h
+	// Segments are in logical order, so each item's fragments stay together.
+	for sg in para.segs {
+		run := runs[sg.run]
+		item := &ctx.out.items[run.item]
+		if item.frag_count == 0 {
+			item.frag_first = len(ctx.out.fragments)
 		}
-		line_y^ += hgt
-		line_h^ = 0
-		line_x^ = 0
-	}
-
-	for t, ti in tokens {
-		switch t.kind {
-		case .Newline:
-			finish_line(ctx, line_start, &line_y, &line_h, &line_x, base_h)
-			line_start = len(ctx.out.fragments)
-			pending_space = -1
-		case .Space:
-			if line_x > 0 {
-				pending_space = ti
-			}
-		case .Word:
-			space_w: f32 = 0
-			if pending_space >= 0 {
-				space_w = tokens[pending_space].w
-			}
-			if line_x > 0 && line_x + space_w + t.w > avail {
-				finish_line(ctx, line_start, &line_y, &line_h, &line_x, base_h)
-				line_start = len(ctx.out.fragments)
-				pending_space = -1
-				space_w = 0
-			}
-			if pending_space >= 0 {
-				place(ctx, runs[:], tokens[pending_space], x + line_x, line_start)
-				line_x += space_w
-			}
-			place(ctx, runs[:], t, x + line_x, line_start)
-			line_x += t.w
-			line_h = max(line_h, t.h)
-			max_w = max(max_w, line_x)
-			pending_space = -1
+		item.frag_count += 1
+		font := run.style.font
+		font.rtl = sg.rtl
+		start, end := 0, 0
+		if run.image == nil {
+			start, end = sg.start - pruns[sg.run].start, sg.end - pruns[sg.run].start
 		}
-	}
-	if len(ctx.out.fragments) > line_start || line_x > 0 {
-		finish_line(ctx, line_start, &line_y, &line_h, &line_x, base_h)
+		r := sg.rect
+		r.x += x
+		r.y += y
+		append(&ctx.out.fragments, Fragment {
+			item       = run.item,
+			start      = start,
+			end        = end,
+			rect       = r,
+			font       = font,
+			color      = run.style.color,
+			background = run.style.background,
+			rtl        = sg.rtl,
+		})
 	}
 
 	// Each inline item's box is the bounding box of its fragments.
@@ -147,8 +133,7 @@ layout_inline :: proc(ctx: ^Context, n: ^host.Node, idx: int, x, y, avail: f32) 
 		if item.frag_count == 0 {
 			continue
 		}
-		first := ctx.out.fragments[item.frag_first]
-		bounds := first.rect
+		bounds := ctx.out.fragments[item.frag_first].rect
 		for f in ctx.out.fragments[item.frag_first:][:item.frag_count] {
 			x1 := max(bounds.x + bounds.w, f.rect.x + f.rect.w)
 			y1 := max(bounds.y + bounds.h, f.rect.y + f.rect.h)
@@ -156,12 +141,12 @@ layout_inline :: proc(ctx: ^Context, n: ^host.Node, idx: int, x, y, avail: f32) 
 			bounds.y = min(bounds.y, f.rect.y)
 			bounds.w, bounds.h = x1 - bounds.x, y1 - bounds.y
 		}
-		item.text_rect = first.rect
+		item.text_rect = bounds
 		if run.item != idx {
 			item.rect = bounds
 		}
 	}
-	return max_w, line_y - y
+	return para.width, para.height
 }
 
 @(private)
@@ -190,70 +175,4 @@ collect_runs :: proc(ctx: ^Context, n: ^host.Node, parent_idx: int, parent_style
 		}
 		c = child.next
 	}
-}
-
-@(private)
-tokenize :: proc(ctx: ^Context, ri: int, run: Run, avail: f32, out: ^[dynamic]Token) {
-	if run.image != nil {
-		size := image_size(run.image, avail)
-		append(out, Token{run = ri, w = size.x, h = size.y, kind = .Word})
-		return
-	}
-	text := run.text
-	for i := 0; i < len(text); {
-		c := text[i]
-		switch {
-		case c == '\n':
-			append(out, Token{run = ri, start = i, end = i + 1, kind = .Newline})
-			i += 1
-		case c == ' ' || c == '\t':
-			j := i
-			for j < len(text) && (text[j] == ' ' || text[j] == '\t') {
-				j += 1
-			}
-			// A run of spaces collapses to one space's width.
-			w, h := ctx.m.measure(ctx.m.data, " ", run.style.font, 0)
-			append(out, Token{run = ri, start = i, end = j, w = w, h = h, kind = .Space})
-			i = j
-		case:
-			j := i
-			for j < len(text) && text[j] != ' ' && text[j] != '\t' && text[j] != '\n' {
-				j += 1
-			}
-			w, h := ctx.m.measure(ctx.m.data, text[i:j], run.style.font, 0)
-			append(out, Token{run = ri, start = i, end = j, w = w, h = h, kind = .Word})
-			i = j
-		}
-	}
-}
-
-// Adds a token to the current line, extending the previous fragment when it
-// continues the same run.
-@(private)
-place :: proc(ctx: ^Context, runs: []Run, t: Token, x: f32, line_start: int) {
-	run := runs[t.run]
-	frags := &ctx.out.fragments
-	if n := len(frags); n > line_start {
-		last := &frags[n - 1]
-		if last.item == run.item && last.end == t.start {
-			last.end = t.end
-			last.rect.w = x + t.w - last.rect.x
-			last.rect.h = max(last.rect.h, t.h)
-			return
-		}
-	}
-	item := &ctx.out.items[run.item]
-	if item.frag_count == 0 {
-		item.frag_first = len(frags)
-	}
-	item.frag_count += 1
-	append(frags, Fragment {
-		item       = run.item,
-		start      = t.start,
-		end        = t.end,
-		rect       = {x, 0, t.w, t.h},
-		font       = run.style.font,
-		color      = run.style.color,
-		background = run.style.background,
-	})
 }

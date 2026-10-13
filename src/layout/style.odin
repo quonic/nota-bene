@@ -4,6 +4,7 @@ import "core:strconv"
 
 import "../abi"
 import "../host"
+import "../text"
 
 Color :: [4]u8
 
@@ -18,6 +19,7 @@ Font :: struct {
 	italic:    bool,
 	mono:      bool,
 	underline: bool,
+	rtl:       bool, // shaped right to left; set by layout per segment, not by styles
 }
 
 // Resolved presentation of one node: browser defaults for its kind, then the
@@ -34,6 +36,7 @@ Style :: struct {
 	width:      Maybe(f32),
 	height:     Maybe(f32),
 	bullet:     bool,
+	text_dir:   text.Dir, // paragraph direction (Dir), inherited
 }
 
 Theme :: struct {
@@ -152,6 +155,9 @@ style_for :: proc(n: ^host.Node, theme: Theme) -> Style {
 		st.background = theme.code_bg
 	}
 
+	if s, ok := n.attrs[.Dir]; ok {
+		st.text_dir = text.parse_dir(s) or_else st.text_dir
+	}
 	if s, ok := n.attrs[.Direction]; ok {
 		st.direction = .Row if s == "row" else .Column
 	}

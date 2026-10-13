@@ -35,7 +35,7 @@ Item :: struct {
 	rect:      Rect,   // border box, document coordinates
 	text_rect: Rect,   // text (or canvas/image content) box
 	text:      string, // borrowed from the node: valid until the tree changes
-	wrap:      f32,    // wrap width the text was measured with; draw with the same
+	wrap:      f32,    // Text_Area: the width its text wraps at
 	style:     Style,
 	href:      string,
 	alt:       string,
@@ -45,7 +45,8 @@ Item :: struct {
 	// those fragments instead of as one wrapped block.
 	frag_first:  int,
 	frag_count:  int,
-	inline_root: int, // the item whose inline context this item flows in, or -1
+	inline_root: int,  // the item whose inline context this item flows in, or -1
+	rtl:         bool, // its text forms a right-to-left paragraph
 }
 
 Result :: struct {
@@ -128,6 +129,9 @@ layout_node :: proc(ctx: ^Context, h: abi.Handle, parent: int, x, y, avail: f32,
 		return 0, 0
 	}
 	st := style_for(n, ctx.theme)
+	if .Dir not_in n.attrs && parent >= 0 {
+		st.text_dir = ctx.out.items[parent].style.text_dir
+	}
 	idx := len(ctx.out.items)
 	append(&ctx.out.items, Item {
 		handle = h,
@@ -148,6 +152,9 @@ layout_node :: proc(ctx: ^Context, h: abi.Handle, parent: int, x, y, avail: f32,
 	}
 	inner := max((outer_w if outer_w >= 0 else avail) - 2 * pad - st.indent, 1)
 	cx := x + pad + st.indent
+	if st.text_dir == .Rtl {
+		cx = x + pad // a right-to-left list is indented on the right
+	}
 	cy := y + pad
 	content_w: f32
 	text_rect: Rect
@@ -188,7 +195,7 @@ layout_node :: proc(ctx: ^Context, h: abi.Handle, parent: int, x, y, avail: f32,
 
 	case:
 		if is_inline_context(ctx.page, n) {
-			iw, ih := layout_inline(ctx, n, idx, cx, cy, inner)
+			iw, ih := layout_inline(ctx, n, idx, cx, cy, inner, true, outer_w >= 0)
 			content_w = iw
 			cy += ih
 			text_rect = ctx.out.items[idx].text_rect
@@ -196,9 +203,8 @@ layout_node :: proc(ctx: ^Context, h: abi.Handle, parent: int, x, y, avail: f32,
 		}
 		has_text := len(n.text) > 0
 		if has_text {
-			tw, th := ctx.m.measure(ctx.m.data, n.text, st.font, inner)
-			text_rect = {cx, cy, tw, th}
-			wrap = inner
+			tw, th := layout_inline(ctx, n, idx, cx, cy, inner, false, outer_w >= 0)
+			text_rect = ctx.out.items[idx].text_rect
 			content_w = tw
 			cy += th
 		}
@@ -309,5 +315,8 @@ shift_items :: proc(r: ^Result, first, end: int, dy: f32) {
 	for &item in r.items[first:end] {
 		item.rect.y += dy
 		item.text_rect.y += dy
+		for &f in r.fragments[item.frag_first:][:item.frag_count] {
+			f.rect.y += dy
+		}
 	}
 }

@@ -191,9 +191,9 @@ draw_item :: proc(b: ^Browser, item: ^layout.Item, index: int, dy: f32) {
 		// One line; while focused, with the caret and selection kept in view.
 		inner := layout.Rect{r.x + st.padding, r.y, r.w - 2 * st.padding, r.h}
 		if focused && sync_input(b) {
-			draw_field(b, u64(item.handle), field.text(&b.input), st.font, st.color, inner, tr.y, &b.input)
+			draw_field(b, u64(item.handle), field.text(&b.input), st.font, st.color, inner, tr.y, &b.input, st.text_dir)
 		} else {
-			draw_field(b, u64(item.handle), item.text, st.font, st.color, inner, tr.y)
+			draw_field(b, u64(item.handle), item.text, st.font, st.color, inner, tr.y, dir = st.text_dir)
 		}
 		content := content_clip(b)
 		sdl.SetRenderClipRect(b.renderer, &content)
@@ -210,10 +210,11 @@ draw_item :: proc(b: ^Browser, item: ^layout.Item, index: int, dy: f32) {
 		_, line_h := measure_text(&b.fonts, "", st.font, 0)
 		size: f32 = 5
 		top := first_text_top(b, item) + dy
-		fill_rect(b, {r.x - 13, top + line_h / 2 - size / 2, size, size}, st.color)
+		bx := r.x + r.w + 8 if item.rtl else r.x - 13
+		fill_rect(b, {bx, top + line_h / 2 - size / 2, size, size}, st.color)
 	}
 	if item.frag_count > 0 {
-		// Inline text: backgrounds (code) first, then highlights, then the text.
+		// Text: backgrounds (code) first, then highlights, then the text.
 		frags := b.lay.fragments[item.frag_first:][:item.frag_count]
 		for f in frags {
 			if f.background.a > 0 {
@@ -224,9 +225,6 @@ draw_item :: proc(b: ^Browser, item: ^layout.Item, index: int, dy: f32) {
 		for f, k in frags {
 			draw_text(b, KEY_FRAG_BASE + u64(item.frag_first + k), item.text[f.start:f.end], f.font, 0, f.color, f.rect.x, f.rect.y + dy)
 		}
-	} else if len(item.text) > 0 {
-		draw_highlights(b, index, dy)
-		draw_text(b, u64(item.handle), item.text, st.font, item.wrap, st.color, tr.x, tr.y)
 	}
 }
 

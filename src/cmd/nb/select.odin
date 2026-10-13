@@ -37,11 +37,6 @@ item_index_of :: proc(b: ^Browser, h: abi.Handle) -> int {
 	return -1
 }
 
-// The cached text object for an item, created if it has not been drawn yet.
-item_text :: proc(b: ^Browser, item: ^layout.Item) -> ^Cached_Text {
-	return cached_text(b, u64(item.handle), item.text, item.style.font, item.wrap)
-}
-
 // The cached text object for one inline fragment.
 fragment_text :: proc(b: ^Browser, item: ^layout.Item, k: int) -> ^Cached_Text {
 	f := b.lay.fragments[item.frag_first + k]
@@ -49,34 +44,25 @@ fragment_text :: proc(b: ^Browser, item: ^layout.Item, k: int) -> ^Cached_Text {
 }
 
 // Document-space rectangles covering bytes [start, end) of an item's text,
-// one per line (per fragment, for inline text).
+// one per fragment it touches. In mixed-direction text a range can be
+// several pieces on one line.
 range_rects :: proc(b: ^Browser, item: ^layout.Item, start, end: int, allocator := context.temp_allocator) -> []layout.Rect {
 	out := make([dynamic]layout.Rect, allocator)
 	if start >= end {
 		return out[:]
 	}
-	if item.frag_count > 0 {
-		for f, k in b.lay.fragments[item.frag_first:][:item.frag_count] {
-			s, e := max(start, f.start), min(end, f.end)
-			if s >= e {
-				continue
-			}
-			c := fragment_text(b, item, k)
-			if c == nil {
-				continue
-			}
-			for r in text_range_rects(b, c, s - f.start, e - f.start, {f.rect.x, f.rect.y}) {
-				append(&out, r)
-			}
+	for f, k in b.lay.fragments[item.frag_first:][:item.frag_count] {
+		s, e := max(start, f.start), min(end, f.end)
+		if s >= e {
+			continue
 		}
-		return out[:]
-	}
-	c := item_text(b, item)
-	if c == nil {
-		return out[:]
-	}
-	for r in text_range_rects(b, c, start, end, {item.text_rect.x, item.text_rect.y}) {
-		append(&out, r)
+		c := fragment_text(b, item, k)
+		if c == nil {
+			continue
+		}
+		for r in text_range_rects(b, c, s - f.start, e - f.start, {f.rect.x, f.rect.y}) {
+			append(&out, r)
+		}
 	}
 	return out[:]
 }
@@ -111,11 +97,13 @@ text_range_rects :: proc(b: ^Browser, c: ^Cached_Text, start, end: int, origin: 
 }
 
 // The text position nearest a document point, if there is page text near it.
+// Page text is all fragments: see fragment_pos_at_point.
 pos_at_point :: proc(b: ^Browser, x, y: f32) -> (Text_Pos, bool) {
 	if pos, ok := fragment_pos_at_point(b, x, y); ok {
 		return pos, true
 	}
-	// The last text item that starts at or above the point.
+	// Not on any line: the end of the last text item that starts above the
+	// point (a point in the gap after a paragraph belongs to its end).
 	best := -1
 	for &item, i in b.lay.items {
 		if !is_text_item(&item) {
@@ -125,38 +113,25 @@ pos_at_point :: proc(b: ^Browser, x, y: f32) -> (Text_Pos, bool) {
 			break
 		}
 		best = i
-		tr := item.text_rect
-		if y < tr.y + tr.h && x < tr.x + tr.w {
-			break // the point is on this item's lines
-		}
 	}
 	if best < 0 {
 		return {}, false
 	}
 	item := &b.lay.items[best]
-	tr := item.text_rect
-	if y >= tr.y + tr.h {
-		return {item.handle, len(item.text)}, true // below the text: its end
-	}
-	c := item_text(b, item)
-	if c == nil {
-		return {item.handle, 0}, true
-	}
-	px := i32((x - tr.x) * b.scale)
-	py := i32((max(y, tr.y) - tr.y) * b.scale)
-	offset, _ := text_offset_at(c, px, py)
-	return {item.handle, clamp(offset, 0, len(item.text))}, true
+	return {item.handle, len(item.text)}, true
 }
 
 // The byte offset in a text object nearest physical point (px, py),
-// relative to its top left. The right half of a character means after it.
-text_offset_at :: proc(c: ^Cached_Text, px, py: i32) -> (int, bool) {
+// relative to its top left. The half of a character further along the
+// reading direction (the right half, or the left in right-to-left text)
+// means after it.
+text_offset_at :: proc(c: ^Cached_Text, px, py: i32, rtl := false) -> (int, bool) {
 	sub: ttf.SubString
 	if !ttf.GetTextSubStringForPoint(c.text, px, py, &sub) {
 		return 0, false
 	}
 	offset := int(sub.offset)
-	if px > sub.rect.x + sub.rect.w / 2 {
+	if (px > sub.rect.x + sub.rect.w / 2) != rtl {
 		offset += int(sub.length)
 	}
 	return offset, true
@@ -188,16 +163,16 @@ fragment_pos_at_point :: proc(b: ^Browser, x, y: f32) -> (Text_Pos, bool) {
 	f := b.lay.fragments[best]
 	item := &b.lay.items[f.item]
 	if x <= f.rect.x {
-		return {item.handle, f.start}, true
+		return {item.handle, f.end if f.rtl else f.start}, true
 	}
 	if x >= f.rect.x + f.rect.w {
-		return {item.handle, f.end}, true
+		return {item.handle, f.start if f.rtl else f.end}, true
 	}
 	c := fragment_text(b, item, best - item.frag_first)
 	if c == nil {
 		return {item.handle, f.start}, true
 	}
-	offset, _ := text_offset_at(c, i32((x - f.rect.x) * b.scale), 0)
+	offset, _ := text_offset_at(c, i32((x - f.rect.x) * b.scale), 0, f.rtl)
 	return {item.handle, clamp(f.start + offset, f.start, f.end)}, true
 }
 
@@ -502,19 +477,41 @@ step_pos :: proc(b: ^Browser, i, offset: int, back, word: bool) -> Text_Pos {
 // A zero-width rectangle at `offset` in item `i`, one line tall.
 caret_rect :: proc(b: ^Browser, i, offset: int) -> layout.Rect {
 	item := &b.lay.items[i]
+	// The leading edge of the character after the caret (its left, or its
+	// right in right-to-left text), else the trailing edge of the one before.
 	if offset < len(item.text) {
-		if rs := range_rects(b, item, offset, field.next_char(item.text, offset)); len(rs) > 0 {
-			return {rs[0].x, rs[0].y, 0, rs[0].h}
+		if r, rtl, ok := char_rect(b, item, offset, field.next_char(item.text, offset)); ok {
+			return {r.x + r.w if rtl else r.x, r.y, 0, r.h}
 		}
 	}
 	if offset > 0 {
-		if rs := range_rects(b, item, field.prev_char(item.text, offset), offset); len(rs) > 0 {
-			r := rs[len(rs) - 1]
-			return {r.x + r.w, r.y, 0, r.h}
+		if r, rtl, ok := char_rect(b, item, field.prev_char(item.text, offset), offset); ok {
+			return {r.x if rtl else r.x + r.w, r.y, 0, r.h}
 		}
 	}
 	_, line_h := measure_text(&b.fonts, "", item.style.font, 0)
 	return {item.text_rect.x, item.text_rect.y, 0, line_h}
+}
+
+// The box of the character at bytes [start, end) of an item's text, and
+// whether it runs right to left.
+@(private="file")
+char_rect :: proc(b: ^Browser, item: ^layout.Item, start, end: int) -> (r: layout.Rect, rtl, ok: bool) {
+	for f, k in b.lay.fragments[item.frag_first:][:item.frag_count] {
+		if start < f.start || end > f.end {
+			continue
+		}
+		c := fragment_text(b, item, k)
+		if c == nil {
+			return
+		}
+		rs := text_range_rects(b, c, start - f.start, end - f.start, {f.rect.x, f.rect.y})
+		if len(rs) == 0 {
+			return
+		}
+		return rs[0], f.rtl, true
+	}
+	return
 }
 
 // Scrolls as little as possible to bring `r` (document coordinates) into view.

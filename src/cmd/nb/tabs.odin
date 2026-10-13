@@ -91,6 +91,8 @@ close_tab :: proc(b: ^Browser, t: ^Tab) -> bool {
 	delete(t.message)
 	delete(t.publisher)
 	delete(t.texts)
+	clear_field_layouts(t)
+	delete(t.field_lays)
 	delete(t.textures)
 	delete(t.matches)
 	field.destroy(&t.input)
@@ -289,6 +291,7 @@ clear_all_text_caches :: proc(b: ^Browser) {
 			delete(c.str)
 			delete_key(&t.texts, key)
 		}
+		clear_field_layouts(t)
 		t.lay_valid = false
 	}
 }

@@ -42,12 +42,37 @@ MONO_FAMILIES :: []Family {
 	{regular = "/System/Library/Fonts/Supplemental/Courier New.ttf", bold = "/System/Library/Fonts/Supplemental/Courier New Bold.ttf"},
 }
 
+// Fonts for scripts the main family lacks, tried in order for any character
+// it has no glyph for. Every path that exists is used.
+FALLBACK_FONTS :: []string {
+	"/usr/share/fonts/google-noto-vf/NotoSansHebrew[wght].ttf",
+	"/usr/share/fonts/google-noto-vf/NotoSansArabic[wght].ttf",
+	"/usr/share/fonts/noto/NotoSansHebrew-Regular.ttf",
+	"/usr/share/fonts/noto/NotoSansArabic-Regular.ttf",
+	"/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
+	"/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+	// CJK: static faces first. SDL_ttf cannot pick a variable font's weight,
+	// and the variable Noto CJK's default instance is too light.
+	"/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
+	"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+	"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+	"/usr/share/fonts/google-droid-sans-fonts/DroidSansFallbackFull.ttf",
+	"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+	"/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc",
+	"/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+	"/usr/share/fonts/TTF/DejaVuSans.ttf",
+	`C:\Windows\Fonts\segoeui.ttf`,
+	"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+}
+
 Font_Key :: struct {
 	px:        i32,
 	bold:      bool,
 	italic:    bool,
 	mono:      bool,
 	underline: bool, // drawn by draw_text, but kept in the key so cached text tracks style
+	rtl:       bool, // shaped right to left
 }
 
 // Resolved files for one family: an empty face means "synthesise from regular".
@@ -58,8 +83,10 @@ Faces :: struct {
 Fonts :: struct {
 	sans:  Faces,
 	mono:  Faces, // regular is nil if no monospace font was found (sans is used)
-	scale: f32,   // physical pixels per layout pixel
-	cache: map[Font_Key]^ttf.Font,
+	scale:     f32,   // physical pixels per layout pixel
+	cache:     map[Font_Key]^ttf.Font,
+	fallbacks: [dynamic]cstring,   // FALLBACK_FONTS that exist
+	opened:    [dynamic]^ttf.Font, // fallback fonts opened for cache entries
 }
 
 @(private="file")
@@ -77,6 +104,11 @@ resolve_family :: proc(f: Family) -> (faces: Faces, ok: bool) {
 fonts_init :: proc(f: ^Fonts, override: string, scale: f32) -> bool {
 	f.scale = scale
 	f.cache = make(map[Font_Key]^ttf.Font)
+	for path in FALLBACK_FONTS {
+		if os.exists(path) {
+			append(&f.fallbacks, strings.clone_to_cstring(path))
+		}
+	}
 	for fam in MONO_FAMILIES {
 		if faces, ok := resolve_family(fam); ok {
 			f.mono = faces
@@ -101,11 +133,20 @@ fonts_clear :: proc(f: ^Fonts) {
 		ttf.CloseFont(font)
 	}
 	clear(&f.cache)
+	for font in f.opened {
+		ttf.CloseFont(font)
+	}
+	clear(&f.opened)
 }
 
 fonts_destroy :: proc(f: ^Fonts) {
 	fonts_clear(f)
 	delete(f.cache)
+	delete(f.opened)
+	for path in f.fallbacks {
+		delete(path)
+	}
+	delete(f.fallbacks)
 	for faces in ([]^Faces{&f.sans, &f.mono}) {
 		delete(faces.regular)
 		delete(faces.bold)
@@ -115,7 +156,7 @@ fonts_destroy :: proc(f: ^Fonts) {
 }
 
 font_key :: proc(f: ^Fonts, font: layout.Font) -> Font_Key {
-	return {px = i32(math.round(font.size * f.scale)), bold = font.bold, italic = font.italic, mono = font.mono, underline = font.underline}
+	return {px = i32(math.round(font.size * f.scale)), bold = font.bold, italic = font.italic, mono = font.mono, underline = font.underline, rtl = font.rtl}
 }
 
 font_get :: proc(f: ^Fonts, font: layout.Font) -> ^ttf.Font {
@@ -150,6 +191,27 @@ font_get :: proc(f: ^Fonts, font: layout.Font) -> ^ttf.Font {
 		return nil
 	}
 	ttf.SetFontStyle(handle, style)
+	// Set the direction rather than leave it to HarfBuzz's guess, so
+	// right-to-left runs are shaped and their brackets mirrored even when
+	// they start with a neutral character.
+	dir: ttf.Direction = .RTL if key.rtl else .LTR
+	ttf.SetFontDirection(handle, dir)
+	for fallback in f.fallbacks {
+		if string(fallback) == string(path) {
+			continue
+		}
+		fb := ttf.OpenFont(fallback, f32(max(key.px, 1)))
+		if fb == nil {
+			continue
+		}
+		ttf.SetFontStyle(fb, style)
+		ttf.SetFontDirection(fb, dir)
+		if ttf.AddFallbackFont(handle, fb) {
+			append(&f.opened, fb)
+		} else {
+			ttf.CloseFont(fb)
+		}
+	}
 	f.cache[key] = handle
 	return handle
 }

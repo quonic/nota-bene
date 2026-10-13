@@ -59,8 +59,9 @@ Tab :: struct {
 	busy_since:  time.Tick,
 	painted:     u64, // page.paint_version at the last frame
 
-	texts:    map[u64]Cached_Text,
-	textures: map[abi.Handle]Cached_Texture,
+	texts:      map[u64]Cached_Text,
+	field_lays: map[u64]Field_Layout, // laid-out field text (fieldtext.odin)
+	textures:   map[abi.Handle]Cached_Texture,
 
 	job:       ^Fetch_Job, // network load in progress (net.odin)
 	publisher: string,     // fingerprint of the current page's publisher, if signed
@@ -166,6 +167,7 @@ unload_page :: proc(b: ^Browser) {
 		delete(c.str)
 	}
 	clear(&b.texts)
+	clear_field_layouts(b.cur)
 	for _, c in b.textures {
 		sdl.DestroyTexture(c.tex)
 	}
@@ -386,11 +388,19 @@ update_layout :: proc(b: ^Browser) {
 	}
 	for key, c in b.texts {
 		stale_node := key < 1 << 32 && !live[abi.Handle(key)]
-		stale_frag := key >= KEY_FRAG_BASE && int(key - KEY_FRAG_BASE) >= len(b.lay.fragments)
-		if stale_node || stale_frag {
+		stale_frag := key >= KEY_FRAG_BASE && key < KEY_SEG_BASE && int(key - KEY_FRAG_BASE) >= len(b.lay.fragments)
+		slot, is_seg := seg_slot(key)
+		stale_seg := is_seg && slot < 1 << 32 && !live[abi.Handle(slot)]
+		if stale_node || stale_frag || stale_seg {
 			ttf.DestroyText(c.text)
 			delete(c.str)
 			delete_key(&b.texts, key)
+		}
+	}
+	for key, &fl in b.field_lays {
+		if key < 1 << 32 && !live[abi.Handle(key)] {
+			field_layout_destroy(&fl)
+			delete_key(&b.field_lays, key)
 		}
 	}
 	for h, c in b.textures {

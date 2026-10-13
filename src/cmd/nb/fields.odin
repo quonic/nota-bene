@@ -9,6 +9,7 @@ import "../../abi"
 import "../../field"
 import "../../host"
 import "../../layout"
+import "../../text"
 
 // A text field drawn by the browser: the address bar, the find bar or the
 // focused page Input or Text_Area. Editing is in package field; this adds
@@ -184,11 +185,30 @@ field_offset_at :: proc(b: ^Browser, t: Field_Target, x, y: f32) -> (offset: int
 		top := a.inner.y + CHROME_HEIGHT - b.scroll_y - b.input.scroll_y
 		return area_offset_at(b, a, x - a.inner.x, y - top), true
 	}
-	f, key, font, left := field_geometry(b, t) or_return
-	if c := cached_text(b, key, field.text(&f.edit), font, 0); c != nil {
-		offset, _ = text_offset_at(c, i32((x - left + f.scroll_x) * b.scale), 0)
+	f, key, _, left := field_geometry(b, t) or_return
+	fl := field_layout_of(b, t) or_return
+	return field_text_offset(b, key, fl, x - left + f.scroll_x, 0), true
+}
+
+// The laid-out text of one-line field `t`, as draw_field lays it out.
+field_layout_of :: proc(b: ^Browser, t: Field_Target) -> (fl: ^Field_Layout, ok: bool) {
+	f, key, font, _ := field_geometry(b, t) or_return
+	width: f32
+	dir := text.Dir.Auto
+	switch t {
+	case .None:
+		return nil, false
+	case .Address:
+		width = address_inner(b).w
+	case .Find:
+		_, vh := viewport_size(b)
+		width = find_field_inner(b, CHROME_HEIGHT + vh).w
+	case .Input:
+		item := &b.lay.items[item_index_of(b, b.focus)]
+		width = item.rect.w - 2 * item.style.padding
+		dir = item.style.text_dir
 	}
-	return offset, true
+	return field_layout(b, key, field.text(&f.edit), font, 0, dir, width), true
 }
 
 // Mouse down in field `t`: places the caret, extends the selection with
@@ -227,38 +247,32 @@ field_drag_to :: proc(b: ^Browser, x, y: f32) {
 // (one that has focus), also its selection and caret, scrolled sideways to
 // keep the caret in view. Leaves the clip rectangle set to `inner`; the
 // caller restores it.
-draw_field :: proc(b: ^Browser, key: u64, s: string, font: layout.Font, color: layout.Color, inner: layout.Rect, y: f32, f: ^Text_Field = nil) {
-	c := cached_text(b, key, s, font, 0)
+draw_field :: proc(b: ^Browser, key: u64, s: string, font: layout.Font, color: layout.Color, inner: layout.Rect, y: f32, f: ^Text_Field = nil, dir := text.Dir.Auto) {
+	fl := field_layout(b, key, s, font, 0, dir, inner.w)
 	x := inner.x
-	caret: f32
+	caret: layout.Rect
 	if f != nil {
-		if c != nil && f.caret > 0 {
-			if rects := text_range_rects(b, c, 0, f.caret, {0, 0}); len(rects) > 0 {
-				caret = rects[len(rects) - 1].x + rects[len(rects) - 1].w
-			}
+		caret = field_text_caret(b, key, fl, f.caret)
+		if caret.x - f.scroll_x > inner.w - 2 {
+			f.scroll_x = caret.x - inner.w + 2
+		} else if caret.x < f.scroll_x {
+			f.scroll_x = caret.x
 		}
-		if caret - f.scroll_x > inner.w - 2 {
-			f.scroll_x = caret - inner.w + 2
-		} else if caret < f.scroll_x {
-			f.scroll_x = caret
-		}
-		tw, _ := measure_text(&b.fonts, s, font, 0)
-		f.scroll_x = clamp(f.scroll_x, 0, max(tw - inner.w + 2, 0))
+		f.scroll_x = clamp(f.scroll_x, 0, max(field_extent(fl) - inner.w + 2, 0))
 		x -= f.scroll_x
 	}
 
 	clip := sdl.Rect{i32(inner.x * b.scale), i32(inner.y * b.scale), i32(inner.w * b.scale), i32(inner.h * b.scale)}
 	sdl.SetRenderClipRect(b.renderer, &clip)
-	if f != nil && c != nil && field.has_selection(&f.edit) {
+	if f != nil && field.has_selection(&f.edit) {
 		lo, hi := field.selection(&f.edit)
-		for r in text_range_rects(b, c, lo, hi, {x, y}) {
-			fill_rect(b, r, SELECTION_COLOR)
+		for r in field_range_rects(b, key, fl, lo, hi) {
+			fill_rect(b, {x + r.x, y + r.y, r.w, r.h}, SELECTION_COLOR)
 		}
 	}
-	draw_text(b, key, s, font, 0, color, x, y)
+	draw_field_text(b, key, fl, color, x, y)
 	if f != nil && b.caret_shown {
-		_, th := measure_text(&b.fonts, "", font, 0)
-		fill_rect(b, {x + caret, y + 2, 1.5, th - 4}, color)
+		fill_rect(b, {x + caret.x, y + caret.y + 2, 1.5, caret.h - 4}, color)
 	}
 }
 

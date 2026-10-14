@@ -78,8 +78,14 @@ response_head = { "id": uint, "status": uint, "size": uint, "message": tstr }
   `read` ignores it.
 - **The body** follows a `200` head as raw messages, `size` bytes in total
   (at most 64 MiB).
-- **Several requests** may be sent one after another on one connection. The
-  browser currently opens one connection per page.
+- **Several requests** may be sent one after another on one connection, each
+  with a new `id`. The browser keeps idle connections for 10 seconds (the
+  server gives up on a silent connection after 15), at most 4 per server,
+  and shares them between page loads and fetches. A connection is reused
+  only for the same address and, when a key is pinned, only if it was
+  authenticated with that key. If a reused connection turns out to be
+  closed, the request is sent once more on a new one: both ops only read.
+  A connection whose body was left unread (`.Too_Large`) is closed.
 
 | Status | Meaning |
 | --- | --- |
@@ -107,7 +113,7 @@ How `nbd` maps paths to files:
 ```text
 bundle = {
   "code":      bstr,               ; the page ELF; its manifest is the .nb_manifest section
-  "assets":    { * tstr => bstr },  ; reserved for page resources (empty for now)
+  "assets":    { * tstr => bstr },  ; files shipped with the page, by relative path
   "hash":      bstr,               ; BLAKE2b-256 of the deterministic CBOR of { "code", "assets" }
   "publisher": bstr,               ; ed25519 public key, or empty
   "sig":       bstr,               ; ed25519 over "NB/1 bundle\0" || hash, or empty
@@ -119,6 +125,15 @@ signed bundle whose signature does not verify. The **transport key** proves
 which server you are talking to. The **publisher key**, used with
 `nbd --sign`, proves who produced the page, so mirrors and caches can serve
 it. The status bar shows the publisher's fingerprint ("signed by …").
+
+**Assets:** `nbd` puts every file under `name.assets/` into the bundle of
+`name.elf` (`index.assets/` for `index.elf`), keyed by its path relative to
+that directory, such as `img/logo.png`. Hidden files, names a request could
+not use (see the path rules above) and excluded files are left out. One asset
+may be at most 16 MiB, the whole bundle at most 64 MiB, and a page may have at
+most 1024 assets. The hash covers them, so editing an asset changes the
+bundle, and a client's `have` stops matching. Pages read them with a relative
+fetch (see [syscalls.md](syscalls.md#fetch-0x300)).
 
 **Caching:** the browser keeps each fetched bundle for the session. Reload
 and back send its hash as `have`, so an unchanged page costs only a 304.
@@ -141,9 +156,5 @@ and back send its hash as `have`, so an unchanged page costs only a 304.
 - **Hybrid post-quantum handshakes:** `core:crypto/mlkem` provides ML-KEM-768,
   and one option is an `NKpsk2` variant keyed from an ML-KEM exchange. This
   needs a design review first.
-- **Bundle assets:** files shipped inside the page's bundle, readable
-  without another round trip.
-- **Connection reuse:** every page load and every fetch opens its own
-  connection and handshake.
 - **Compression:** the standard library only decompresses;
   `vendor:compress/lz4` could fill the gap.

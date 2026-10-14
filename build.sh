@@ -106,6 +106,14 @@ build_examples() {
 	for dir in "$ROOT"/examples/*/site/; do
 		[[ -d "$dir" ]] && cp -r "$dir". "$BUILD/site/"
 	done
+	# Files bundled with a page: examples/<name>/assets/ -> <name>.assets/.
+	for dir in "$ROOT"/examples/*/assets/; do
+		[[ -d "$dir" ]] || continue
+		local name
+		name=$(basename "$(dirname "$dir")")
+		rm -rf "$BUILD/site/$name.assets"
+		cp -r "$dir" "$BUILD/site/$name.assets"
+	done
 }
 
 # Every test program is built twice: with compressed instructions (.c.elf)

@@ -266,6 +266,13 @@ contains pages written directly in assembly.
      that arrives after the user navigated away or closed the tab is dropped.
    - **On the server,** the new NB/1 `read` op serves files as they are. See
      [syscalls.md](syscalls.md#fetch-0x300).
+   - **Bundle assets.** `nbd` ships the files in `name.assets/` inside the
+     bundle of `name.elf`. `host` answers a relative fetch that names one
+     straight from the bundle (`page_set_assets`), with no manifest line and
+     no round trip.
+   - **Connection reuse.** `nb` keeps a `proto.Pool` of idle, authenticated
+     connections, shared by page loads and fetches. A connection is reused
+     only for the same address and key.
 6. **Images** (done). `Image_Set_Data` hands the browser a PNG or baseline
    JPEG that the page embedded or fetched.
    - **Decoding.** `host` decodes it with Odin's `core:image`, which is pure
@@ -303,5 +310,4 @@ Later ideas:
 - a GDB remote stub hooked to `ebreak`
 - record and replay
 - hybrid post-quantum handshakes with ML-KEM
-- bundle assets, and connection reuse for fetches
 - sending data, not just reading it: a request body, for servers that do more than serve files

@@ -306,6 +306,14 @@ case .Fetch:
   page's own address that resolves the way links do. `.` and `..` are folded
   before the manifest check. A page opened from a local file has no address,
   so it can only fetch absolute URLs.
+- **Bundled files.** A relative request that resolves to a file in the
+  page's bundle (`name.assets/` next to `name.elf`, see
+  [protocol.md](protocol.md#page-bundles)) is answered from the bundle. The
+  `Fetch` event is already queued when `Fetch_Open` returns. No manifest
+  line is needed, and the request does not count towards the 16 in flight.
+  A bundled file shadows the server's file at the same path, so it shows the
+  bundle's copy even if the file on the server has changed since. Absolute
+  `nb://` URLs always go to the network.
 - **What comes back.** The server returns the file at that path byte for byte
   (the `read` op in [protocol.md](protocol.md#messages)). The path must name
   the file exactly. A page path like `/hello` does not resolve to
@@ -325,7 +333,8 @@ case .Fetch:
   the 16 in flight until the network gives up on it. That way, opening and
   closing streams in a loop cannot pile up connections.
 - **No ambient credentials.** Requests carry no cookies and no client
-  identity, and each one uses its own connection.
+  identity. They may share an idle connection with earlier requests and page
+  loads to the same server and key.
 
 ## Storage (`0x400`)
 

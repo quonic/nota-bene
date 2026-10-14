@@ -5,14 +5,17 @@ package server
 import "core:crypto/ecdh"
 import "core:crypto/ed25519"
 import "core:fmt"
+import "core:hash"
 import "core:net"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
 
+import "../abi"
 import "../proto"
 
 Config :: struct {
@@ -21,6 +24,7 @@ Config :: struct {
 	signer:          ed25519.Private_Key, // publisher key, used when `sign` is set
 	sign:            bool,
 	max_connections: int,
+	max_requests:    int, // per connection; 0 for no limit
 	log:             bool,
 	// Files never served, even when they lie under root: nbd puts its key
 	// files here. Compared as absolute paths.
@@ -39,12 +43,14 @@ Server :: struct {
 	cache:      map[string]Cached_Bundle,
 }
 
-// Encoded bundles, rebuilt when the file's modification time or size changes.
+// Encoded bundles, rebuilt when the file's modification time or size
+// changes, or any of its assets do.
 Cached_Bundle :: struct {
-	mtime:   time.Time,
-	size:    i64,
-	hash:    [proto.HASH_SIZE]u8,
-	encoded: []u8,
+	mtime:      time.Time,
+	size:       i64,
+	assets_sig: u64,
+	hash:       [proto.HASH_SIZE]u8,
+	encoded:    []u8,
 }
 
 MAX_PATH :: 1024
@@ -136,7 +142,10 @@ handle_connection :: proc(srv: ^Server, sock: net.TCP_Socket, peer: net.Endpoint
 		log(srv, peer, "-", "handshake failed: %s", proto.error_text(err))
 		return
 	}
-	for !sync.atomic_load(&srv.stopping) {
+	for n := 0; !sync.atomic_load(&srv.stopping); n += 1 {
+		if srv.cfg.max_requests > 0 && n >= srv.cfg.max_requests {
+			return
+		}
 		req: proto.Request
 		if proto.recv_cbor(s, &req, context.temp_allocator) != nil {
 			return // closed, timed out or garbage: end the connection
@@ -292,9 +301,11 @@ get_bundle :: proc(srv: ^Server, file: string) -> (hash: [proto.HASH_SIZE]u8, en
 	if serr != nil {
 		return
 	}
+	assets := list_assets(srv, file) or_return
+	sig := assets_signature(assets)
 	sync.mutex_lock(&srv.cache_lock)
 	defer sync.mutex_unlock(&srv.cache_lock)
-	if c, found := srv.cache[file]; found && c.mtime == fi.modification_time && c.size == fi.size {
+	if c, found := srv.cache[file]; found && c.mtime == fi.modification_time && c.size == fi.size && c.assets_sig == sig {
 		// The cache owns `encoded`; it is only replaced under the lock, but a
 		// sender may still be using it, so hand out a copy.
 		return c.hash, clone_bytes(c.encoded), true
@@ -303,18 +314,106 @@ get_bundle :: proc(srv: ^Server, file: string) -> (hash: [proto.HASH_SIZE]u8, en
 	if rerr != nil {
 		return
 	}
+	data := make(map[string][]u8, len(assets), context.temp_allocator)
+	total := len(code)
+	for a in assets {
+		bytes, aerr := os.read_entire_file(a.path, context.temp_allocator)
+		total += len(bytes)
+		if aerr != nil || len(bytes) > abi.MAX_FETCH_BODY || total > proto.MAX_BODY {
+			return
+		}
+		data[a.name] = bytes
+	}
 	signer := &srv.cfg.signer if srv.cfg.sign else nil
-	data, h, eok := proto.bundle_encode(code, nil, signer)
+	enc, h, eok := proto.bundle_encode(code, data, signer)
 	if !eok {
 		return
 	}
+	entry := Cached_Bundle{fi.modification_time, fi.size, sig, h, enc}
 	if old, found := srv.cache[file]; found {
 		delete(old.encoded)
-		srv.cache[file] = {fi.modification_time, fi.size, h, data}
+		srv.cache[file] = entry
 	} else {
-		srv.cache[strings.clone(file)] = {fi.modification_time, fi.size, h, data}
+		srv.cache[strings.clone(file)] = entry
 	}
-	return h, clone_bytes(data), true
+	return h, clone_bytes(enc), true
+}
+
+// A file that goes into a page's bundle.
+@(private)
+Asset_File :: struct {
+	name:  string, // relative to the assets directory, "/"-separated
+	path:  string,
+	size:  i64,
+	mtime: time.Time,
+}
+
+MAX_ASSETS :: 1024
+
+// The directory whose files ship in the bundle of page `file`: hello.elf
+// carries hello.assets/.
+assets_dir :: proc(file: string, allocator := context.temp_allocator) -> string {
+	return strings.concatenate({strings.trim_suffix(file, ".elf"), ".assets"}, allocator)
+}
+
+// Lists a page's asset files, sorted by name. Only regular files count, and
+// only names a request could ask for; hidden and excluded files are skipped.
+// Fails if there are more than MAX_ASSETS.
+@(private)
+list_assets :: proc(srv: ^Server, file: string) -> (files: []Asset_File, ok: bool) {
+	out := make([dynamic]Asset_File, context.temp_allocator)
+	dir := assets_dir(file)
+	if os.is_dir(dir) {
+		list_assets_in(srv, dir, "", &out) or_return
+	}
+	slice.sort_by(out[:], proc(a, b: Asset_File) -> bool {
+		return a.name < b.name
+	})
+	return out[:], true
+}
+
+@(private)
+list_assets_in :: proc(srv: ^Server, dir, prefix: string, out: ^[dynamic]Asset_File) -> bool {
+	entries, err := os.read_all_directory_by_path(dir, context.temp_allocator)
+	if err != nil {
+		return false
+	}
+	for fi in entries {
+		if strings.has_prefix(fi.name, ".") {
+			continue
+		}
+		name := fi.name if prefix == "" else strings.concatenate({prefix, "/", fi.name}, context.temp_allocator)
+		if !valid_path(strings.concatenate({"/", name}, context.temp_allocator)) {
+			continue
+		}
+		#partial switch fi.type {
+		case .Directory:
+			list_assets_in(srv, fi.fullpath, name, out) or_return
+		case .Regular:
+			if excluded(srv, fi.fullpath) {
+				continue
+			}
+			if len(out) >= MAX_ASSETS {
+				return false
+			}
+			append(out, Asset_File{name, fi.fullpath, fi.size, fi.modification_time})
+		}
+	}
+	return true
+}
+
+// Changes whenever an asset is added, removed, renamed or modified.
+@(private)
+assets_signature :: proc(files: []Asset_File) -> u64 {
+	h := hash.fnv64a(nil)
+	for f in files {
+		size, mtime := f.size, time.to_unix_nanoseconds(f.mtime)
+		h = hash.fnv64a(transmute([]u8)f.name, h)
+		h = hash.fnv64a({0}, h) // ends the name, which is the only part of varying length
+		h = hash.fnv64a(([^]u8)(&size)[:size_of(size)], h)
+		h = hash.fnv64a(([^]u8)(&mtime)[:size_of(mtime)], h)
+	}
+	return h
 }
 
 @(private)

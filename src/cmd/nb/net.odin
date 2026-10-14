@@ -20,6 +20,7 @@ Fetch_Job :: struct {
 		Known_Hosts,
 	},
 	have:         []u8,
+	pool:         ^proto.Pool, // a reference held for the thread
 	push_history: bool,
 	result:       proto.Fetch_Result,
 	done:         bool, // atomic
@@ -30,7 +31,21 @@ Fetch_Job :: struct {
 Cached_Page :: struct {
 	hash:      []u8,
 	code:      []u8,
+	assets:    map[string][]u8,
 	publisher: string,
+}
+
+@(private)
+cached_page_destroy :: proc(c: ^Cached_Page) {
+	delete(c.hash)
+	delete(c.code)
+	for name, data in c.assets {
+		delete(name)
+		delete(data)
+	}
+	delete(c.assets)
+	delete(c.publisher)
+	c^ = {}
 }
 
 @(private)
@@ -64,10 +79,13 @@ start_fetch :: proc(b: ^Browser, location: string, push_history: bool) {
 	if c, found := b.cache[cache_key(u)]; found {
 		job.have = c.hash
 	}
+	job.pool = b.pool
+	proto.pool_retain(job.pool)
 	b.job = job
 	set_message(b, "connecting to %s…", host)
 	job.thread = thread.create_and_start_with_poly_data(job, proc(job: ^Fetch_Job) {
-		job.result = proto.fetch(job.url, job.pinned, job.have)
+		job.result = proto.fetch(job.url, job.pinned, job.have, job.pool)
+		proto.pool_release(job.pool)
 		sync.atomic_store(&job.done, true)
 	})
 }
@@ -127,17 +145,14 @@ poll_fetch :: proc(b: ^Browser) {
 			copy(pk[:], r.bundle.publisher)
 			publisher = proto.key_fingerprint(pk)
 		}
-		if old, found := b.cache[key]; found {
-			delete(old.hash)
-			delete(old.code)
-			delete(old.publisher)
-			b.cache[key] = {}
+		if old, found := &b.cache[key]; found {
+			cached_page_destroy(old)
 		} else {
 			key = strings.clone(key)
 		}
 		// Take ownership of the bundle's buffers.
-		b.cache[key] = {hash = r.bundle.hash, code = r.bundle.code, publisher = publisher}
-		r.bundle.hash, r.bundle.code = nil, nil
+		b.cache[key] = {hash = r.bundle.hash, code = r.bundle.code, assets = r.bundle.assets, publisher = publisher}
+		r.bundle.hash, r.bundle.code, r.bundle.assets = nil, nil, nil
 	}
 	c, found := b.cache[key]
 	if !found {
@@ -154,6 +169,7 @@ poll_fetch :: proc(b: ^Browser) {
 		self := u
 		self.key, self.has_key = r.server_key, true
 		host.page_set_location(&b.page, proto.url_string(self, context.temp_allocator))
+		host.page_set_assets(&b.page, c.assets)
 	}
 	delete(b.publisher)
 	b.publisher = strings.clone(c.publisher)
@@ -169,6 +185,7 @@ Data_Fetch :: struct {
 	tab:         ^Tab,
 	serial:      u64,  // the page that asked; see Tab.serial
 	id:          u64,  // the host's request id
+	pool:        ^proto.Pool, // a reference held for the thread
 	result:      proto.Read_Result,
 	done:        bool, // atomic
 	thread:      ^thread.Thread,
@@ -189,9 +206,12 @@ page_fetch :: proc(p: ^host.Page, id: u64, url: string) {
 	} else if k, found := proto.known_hosts_get(&b.known_hosts, proto.host_port(job.url, context.temp_allocator)); found {
 		job.pinned, job.from_known = k, true
 	}
+	job.pool = b.pool
+	proto.pool_retain(job.pool)
 	append(&b.fetches, job)
 	job.thread = thread.create_and_start_with_poly_data(job, proc(job: ^Data_Fetch) {
-		job.result = proto.read(job.url, job.pinned, abi.MAX_FETCH_BODY)
+		job.result = proto.read(job.url, job.pinned, abi.MAX_FETCH_BODY, job.pool)
+		proto.pool_release(job.pool)
 		sync.atomic_store(&job.done, true)
 	})
 }
@@ -254,12 +274,11 @@ net_shutdown :: proc(b: ^Browser) {
 	// stall the exit for as long as a connect takes to time out.
 	poll_data_fetches(b)
 	delete(b.fetches)
-	for key, c in b.cache {
+	for key, &c in b.cache {
 		delete(key)
-		delete(c.hash)
-		delete(c.code)
-		delete(c.publisher)
+		cached_page_destroy(&c)
 	}
 	delete(b.cache)
+	proto.pool_close(b.pool)
 	proto.known_hosts_destroy(&b.known_hosts)
 }

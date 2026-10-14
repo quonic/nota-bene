@@ -103,6 +103,7 @@ Browser :: struct {
 	// Network (net.odin)
 	known_hosts: proto.Known_Hosts,
 	cache:       map[string]Cached_Page,
+	pool:        ^proto.Pool, // idle connections, shared by page loads and fetches
 	profile:     string, // directory for known_hosts and site storage
 	fetches:     [dynamic]^Data_Fetch, // pages' own requests, from every tab
 	last_serial: u64,

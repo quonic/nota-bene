@@ -63,6 +63,7 @@ Page :: struct {
 	fetch_proc:    Fetch_Proc,            // nil: Fetch_Open fails with -NOSYS
 	fetches:       map[u64]abi.Handle,    // requests in flight; INVALID_HANDLE once the page closed the stream
 	next_fetch_id: u64,
+	assets:        map[string][]u8,       // files from the page's bundle; see page_set_assets
 
 	log_proc:    Log_Proc,
 	trace_proc:  Trace_Proc, // called after each syscall when set
@@ -105,6 +106,7 @@ page_destroy :: proc(p: ^Page) {
 	delete(p.events)
 	delete(p.fetches)
 	delete(p.location, p.allocator)
+	page_set_assets(p, nil)
 	loader.manifest_destroy(&p.image.manifest)
 	vm.memory_destroy(&p.cpu.mem, p.allocator)
 	p^ = {}

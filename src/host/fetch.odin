@@ -1,5 +1,6 @@
 package host
 
+import "base:runtime"
 import "core:strings"
 
 import "../abi"
@@ -45,6 +46,25 @@ page_set_location :: proc(p: ^Page, url: string) {
 	p.location = strings.clone(url, p.allocator)
 }
 
+// Gives the page the files that came in its bundle, keyed by path relative
+// to the page's own address. Relative fetches that name one are answered
+// from here, without a round trip. The map is copied; nil clears it.
+page_set_assets :: proc(p: ^Page, assets: map[string][]u8) {
+	for name, data in p.assets {
+		delete(name, p.allocator)
+		delete(data, p.allocator)
+	}
+	delete(p.assets)
+	p.assets = nil
+	if len(assets) == 0 {
+		return
+	}
+	p.assets = make(map[string][]u8, len(assets), p.allocator)
+	for name, data in assets {
+		p.assets[strings.clone(name, p.allocator)] = clone_bytes(data, p.allocator)
+	}
+}
+
 // Delivers the answer to request `id`. A body over abi.MAX_FETCH_BODY turns
 // into -RANGE. Answers for streams the page has closed are dropped. The body
 // is copied.
@@ -62,15 +82,47 @@ page_fetch_complete :: proc(p: ^Page, id: u64, status: i64, body: []u8) {
 	if !ok || st.id != id {
 		return
 	}
+	stream_finish(p, h, st, status, body)
+}
+
+@(private)
+stream_finish :: proc(p: ^Page, h: abi.Handle, st: ^Stream, status: i64, body: []u8) {
 	status, body := status, body
 	if len(body) > abi.MAX_FETCH_BODY {
 		status, body = -i64(abi.Errno.RANGE), nil
 	}
 	st.done = true
 	st.status = status
-	st.body = make([]u8, len(body), p.allocator)
-	copy(st.body, body)
+	st.body = clone_bytes(body, p.allocator)
 	page_push_event(p, abi.Event{kind = .Fetch, handle = h, a = status, b = i64(len(body))})
+}
+
+@(private)
+clone_bytes :: proc(b: []u8, allocator: runtime.Allocator) -> []u8 {
+	out := make([]u8, len(b), allocator)
+	copy(out, b)
+	return out
+}
+
+// The bundled file a relative reference names, if any: the reference must
+// resolve to the page's own server and key, under the page's directory.
+@(private)
+fetch_asset :: proc(p: ^Page, ref: string) -> (data: []u8, ok: bool) {
+	if len(p.assets) == 0 || proto.is_nb_url(ref) || strings.contains(ref, "://") {
+		return
+	}
+	base := proto.parse_url(p.location) or_return
+	resolved, _ := proto.resolve_ref(base, ref, context.temp_allocator)
+	target := proto.parse_url(resolved) or_return
+	if target.host != base.host || target.port != base.port || target.has_key != base.has_key || target.key != base.key {
+		return
+	}
+	dir := base.path[:strings.last_index_byte(base.path, '/') + 1]
+	path := proto.clean_path(target.path, context.temp_allocator)
+	if !strings.has_prefix(path, dir) {
+		return
+	}
+	return p.assets[path[len(dir):]]
 }
 
 // The URL a page asked for, resolved against its own address and checked
@@ -136,6 +188,16 @@ fetch_entry_valid :: proc(entry: string) -> bool {
 
 @(private)
 fetch_open :: proc(p: ^Page, ref: string) -> (abi.Handle, abi.Errno) {
+	if data, ok := fetch_asset(p, ref); ok {
+		// Part of the page itself: no manifest line needed, nothing in flight.
+		h, hok := handle_alloc(&p.handles, Stream{})
+		if !hok {
+			return abi.INVALID_HANDLE, .RANGE
+		}
+		st, _ := &handle_get(&p.handles, h).obj.(Stream)
+		stream_finish(p, h, st, 200, data)
+		return h, .OK
+	}
 	if p.fetch_proc == nil {
 		return abi.INVALID_HANDLE, .NOSYS // this front end has no network
 	}

@@ -130,6 +130,26 @@ test_bundle_verification :: proc(t: ^testing.T) {
 
 	_, gerr := proto.bundle_decode([]u8{0xFF, 0x00, 0x13})
 	testing.expect_value(t, gerr, proto.Error.Bad_Bundle)
+
+	// The hash covers the assets too.
+	assets := make(map[string][]u8, context.temp_allocator)
+	assets["a.txt"] = transmute([]u8)string("hello asset")
+	adata, _, aok := proto.bundle_encode(code, assets, nil, context.temp_allocator)
+	testing.expect(t, aok)
+	ab, aerr := proto.bundle_decode(adata)
+	testing.expect_value(t, aerr, proto.Error.None)
+	testing.expect_value(t, string(ab.assets["a.txt"]), "hello asset")
+	proto.bundle_destroy(&ab)
+	atampered := make([]u8, len(adata), context.temp_allocator)
+	copy(atampered, adata)
+	for i in 0 ..< len(atampered) - 5 {
+		if string(atampered[i:][:5]) == "hello" {
+			atampered[i] = 'j'
+			break
+		}
+	}
+	_, aterr := proto.bundle_decode(atampered)
+	testing.expect_value(t, aterr, proto.Error.Bad_Bundle)
 }
 
 // An in-memory byte pipe, so sessions can be tested (and tampered with)
@@ -466,4 +486,144 @@ test_known_hosts :: proc(t: ^testing.T) {
 	testing.expect(t, ok && got == k)
 	_, missing := proto.known_hosts_get(&again, "other:4040")
 	testing.expect(t, !missing)
+}
+
+// Starts a server on a loopback port, for the tests below.
+@(private)
+start_server :: proc(t: ^testing.T, srv: ^server.Server, root: string) -> (th: ^thread.Thread, ok: bool) {
+	srv.cfg.root = root
+	testing.expect(t, ecdh.private_key_generate(&srv.cfg.static_key, .X25519))
+	if err := server.listen(srv, {address = net.IP4_Loopback, port = 0}); !testing.expectf(t, err == nil, "listen: %v", err) {
+		return nil, false
+	}
+	return thread.create_and_start_with_poly_data(srv, server.serve), true
+}
+
+@(private)
+stop_server :: proc(srv: ^server.Server, th: ^thread.Thread) {
+	server.stop(srv)
+	thread.join(th)
+	thread.destroy(th)
+	server.destroy(srv)
+}
+
+// Requests through a pool share connections.
+@(test)
+test_pool :: proc(t: ^testing.T) {
+	srv: server.Server
+	th, started := start_server(t, &srv, BUILD_DIR)
+	if !started {
+		return
+	}
+	defer stop_server(&srv, th)
+	pub := proto.public_key_of(&srv.cfg.static_key)
+	u, _ := proto.parse_url(fmt.tprintf("nb://127.0.0.1:%d/hello.elf", srv.endpoint.port))
+
+	pool := proto.pool_create()
+	defer proto.pool_close(pool)
+	for _ in 0 ..< 3 {
+		rd := proto.read(u, pub, 1 << 20, pool)
+		testing.expectf(t, rd.err == nil && rd.status == proto.STATUS_OK, "read: %v %d", rd.err, rd.status)
+		proto.read_result_destroy(&rd)
+	}
+	r := proto.fetch(u, nil, nil, pool) // unpinned: any connection to the address will do
+	testing.expectf(t, r.err == nil, "fetch: %s %s", proto.error_text(r.err), r.detail)
+	testing.expect(t, r.server_key == pub)
+	proto.fetch_result_destroy(&r)
+	missing := u
+	missing.path = "/missing.txt"
+	rd := proto.read(missing, pub, 1 << 20, pool) // a 404 leaves the connection usable
+	testing.expect_value(t, rd.status, proto.STATUS_NOT_FOUND)
+	proto.read_result_destroy(&rd)
+	testing.expect_value(t, proto.pool_dials(pool), 1)
+	testing.expect_value(t, proto.pool_idle(pool), 1)
+	testing.expect_value(t, sync.atomic_load(&srv.requests), 5)
+
+	// A different pinned key never gets the connection authenticated with this one.
+	wrong := pub
+	wrong[0] ~= 0x40
+	rd = proto.read(u, wrong, 1 << 20, pool)
+	testing.expect_value(t, rd.err, proto.Error.Handshake)
+	proto.read_result_destroy(&rd)
+	testing.expect_value(t, proto.pool_dials(pool), 2)
+	testing.expect_value(t, proto.pool_idle(pool), 1)
+
+	// A body left unread takes its connection with it.
+	rd = proto.read(u, pub, 10, pool)
+	testing.expect_value(t, rd.err, proto.Error.Too_Large)
+	proto.read_result_destroy(&rd)
+	testing.expect_value(t, proto.pool_idle(pool), 0)
+}
+
+// A pooled connection the server has closed is replaced, once, without the
+// caller noticing.
+@(test)
+test_pool_stale :: proc(t: ^testing.T) {
+	srv: server.Server
+	srv.cfg.max_requests = 1
+	th, started := start_server(t, &srv, BUILD_DIR)
+	if !started {
+		return
+	}
+	defer stop_server(&srv, th)
+	pub := proto.public_key_of(&srv.cfg.static_key)
+	u, _ := proto.parse_url(fmt.tprintf("nb://127.0.0.1:%d/hello.elf", srv.endpoint.port))
+
+	pool := proto.pool_create()
+	defer proto.pool_close(pool)
+	for i in 0 ..< 3 {
+		rd := proto.read(u, pub, 1 << 20, pool)
+		testing.expectf(t, rd.err == nil && rd.status == proto.STATUS_OK, "read %d: %v %d", i, rd.err, rd.status)
+		proto.read_result_destroy(&rd)
+	}
+	testing.expect_value(t, proto.pool_dials(pool), 3)
+}
+
+// Files in name.assets/ travel in the bundle of name.elf.
+@(test)
+test_bundle_assets :: proc(t: ^testing.T) {
+	hello, rerr := os.read_entire_file(fmt.tprintf("%s/hello.elf", BUILD_DIR), context.temp_allocator)
+	if !testing.expectf(t, rerr == nil, "build/hello.elf missing (run ./build.sh test): %v", rerr) {
+		return
+	}
+	dir := fmt.tprintf("%s/test_assets", BUILD_DIR)
+	os.make_directory_all(fmt.tprintf("%s/page.assets/sub", dir))
+	defer os.remove_all(dir)
+	write :: proc(t: ^testing.T, path, text: string) {
+		testing.expectf(t, os.write_entire_file(path, transmute([]u8)text) == nil, "write %s", path)
+	}
+	testing.expect(t, os.write_entire_file(fmt.tprintf("%s/page.elf", dir), hello) == nil)
+	write(t, fmt.tprintf("%s/page.assets/a.txt", dir), "first")
+	write(t, fmt.tprintf("%s/page.assets/sub/b.txt", dir), "second")
+	write(t, fmt.tprintf("%s/page.assets/bad name.txt", dir), "no request could name this")
+	write(t, fmt.tprintf("%s/page.assets/.hidden", dir), "editor droppings")
+
+	srv: server.Server
+	th, started := start_server(t, &srv, dir)
+	if !started {
+		return
+	}
+	defer stop_server(&srv, th)
+	pub := proto.public_key_of(&srv.cfg.static_key)
+	u, _ := proto.parse_url(fmt.tprintf("nb://127.0.0.1:%d/page", srv.endpoint.port))
+
+	r := proto.fetch(u, pub, nil)
+	testing.expectf(t, r.err == nil, "fetch: %s %s", proto.error_text(r.err), r.detail)
+	testing.expect_value(t, len(r.bundle.assets), 2)
+	testing.expect_value(t, string(r.bundle.assets["a.txt"]), "first")
+	testing.expect_value(t, string(r.bundle.assets["sub/b.txt"]), "second")
+	hash := make([]u8, len(r.bundle.hash), context.temp_allocator)
+	copy(hash, r.bundle.hash)
+	proto.fetch_result_destroy(&r)
+
+	r = proto.fetch(u, pub, hash)
+	testing.expect(t, r.err == nil && r.not_modified, "unchanged: 304")
+	proto.fetch_result_destroy(&r)
+
+	// Changing an asset changes the bundle.
+	write(t, fmt.tprintf("%s/page.assets/a.txt", dir), "changed!")
+	r = proto.fetch(u, pub, hash)
+	testing.expectf(t, r.err == nil && !r.not_modified, "after an edit: %v %v", r.err, r.not_modified)
+	testing.expect_value(t, string(r.bundle.assets["a.txt"]), "changed!")
+	proto.fetch_result_destroy(&r)
 }

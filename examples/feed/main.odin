@@ -1,6 +1,7 @@
 // Feed: a list loaded from feed.txt on the page's own server. Shows how a
-// page fetches data and handles each outcome. Open it over nb:// (from nbd);
-// opened as a local file it has no server to fetch from.
+// page fetches data and handles each outcome, and how a file bundled with
+// the page (intro.txt, from assets/) arrives without a round trip. Open it
+// over nb:// (from nbd); opened as a local file it has no server to fetch from.
 package main
 
 import "core:strconv"
@@ -8,17 +9,21 @@ import "core:strings"
 
 import nb "../../sdk/nb"
 
-FEED :: "feed.txt"
+FEED  :: "feed.txt"
+INTRO :: "intro.txt" // bundled: examples/feed/assets/ becomes feed.assets/ next to feed.elf
 
 list, status: nb.Handle
 items: [dynamic]nb.Handle // every node under `list`, closed on refresh
 pending := nb.INVALID_HANDLE
+intro: nb.Handle
+intro_pending := nb.INVALID_HANDLE
 
 main :: proc() {
 	root := nb.el(.Box)
 	nb.set_attr(root, .Gap, "12")
 	title := nb.el(.Heading, root, "Feed")
 	nb.set_attr(title, .Level, "2")
+	intro = nb.el(.Paragraph, root)
 
 	status = nb.el(.Paragraph, root)
 	nb.set_attr(status, .Color, "#6b7280")
@@ -29,6 +34,9 @@ main :: proc() {
 	nb.set_attr(back, .Href, "hello.elf")
 	nb.set_root(root)
 
+	if h, err := nb.fetch(INTRO); err == .OK {
+		intro_pending = h
+	}
 	load()
 	for {
 		ev, ok := nb.wait_event()
@@ -43,6 +51,14 @@ main :: proc() {
 		case .Fetch:
 			if ev.handle == pending {
 				loaded(ev.a, int(ev.b))
+			} else if ev.handle == intro_pending {
+				if ev.a == 200 {
+					if data, err := nb.fetch_read_all(intro_pending, int(ev.b), context.temp_allocator); err == .OK {
+						nb.set_text(intro, strings.trim_space(string(data)))
+					}
+				}
+				nb.close(intro_pending)
+				intro_pending = nb.INVALID_HANDLE
 			}
 		case .Quit:
 			return

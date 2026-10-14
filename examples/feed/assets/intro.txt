@@ -1,0 +1,1 @@
+This introduction ships inside the page's bundle (examples/feed/assets/), so it is here at once, with no request to the server. The list below is fetched live.

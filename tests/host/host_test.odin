@@ -462,6 +462,29 @@ test_fetch :: proc(t: ^testing.T) {
 	}
 }
 
+// Relative fetches of files in the page's bundle are answered at once, with
+// no manifest line and no network.
+@(test)
+test_fetch_asset :: proc(t: ^testing.T) {
+	for variant in ([]string{"c", "nc"}) {
+		p: host.Page
+		if !load_page(t, &p, fmt.tprintf("%s/fetch_asset.%s.elf", FIXTURES, variant)) {
+			return
+		}
+		defer host.page_destroy(&p)
+		p.fetch_proc = proc(p: ^host.Page, id: u64, url: string) {
+			panic("an asset request reached the network")
+		}
+		host.page_set_location(&p, "nb://site.example/app/page")
+		assets := make(map[string][]u8, context.temp_allocator)
+		assets["img/a.txt"] = transmute([]u8)string("asset")
+		host.page_set_assets(&p, assets)
+		run_page(&p)
+		expect_exit(t, &p, 0)
+		testing.expect_value(t, len(p.fetches), 0)
+	}
+}
+
 @(test)
 test_fetch_policy :: proc(t: ^testing.T) {
 	p: host.Page

@@ -319,8 +319,10 @@ select_paragraph :: proc(b: ^Browser, pos: Text_Pos) {
 	b.sel_focus = {b.lay.items[last].handle, len(b.lay.items[last].text)}
 }
 
-select_all :: proc(b: ^Browser) {
-	first, last := -1, -1
+// The first and last text items on the page, or -1 if it has no text.
+@(private="file")
+text_item_bounds :: proc(b: ^Browser) -> (first, last: int) {
+	first, last = -1, -1
 	for &item, i in b.lay.items {
 		if is_text_item(&item) {
 			if first < 0 {
@@ -329,6 +331,11 @@ select_all :: proc(b: ^Browser) {
 			last = i
 		}
 	}
+	return
+}
+
+select_all :: proc(b: ^Browser) {
+	first, last := text_item_bounds(b)
 	if first < 0 {
 		return
 	}
@@ -372,13 +379,19 @@ selected_text :: proc(b: ^Browser, allocator := context.temp_allocator) -> strin
 	return strings.to_string(sb)
 }
 
-// Shift with the arrows, Home or End moves the focus end of the page
-// selection: by character (by word with Ctrl), by line, or to the start or
-// end of the line. Returns false if there is no selection to extend.
-extend_selection_key :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers) -> bool {
-	if .Shift not_in mods || !b.has_selection || !b.lay_valid {
+// The arrows, Home, End, Page Up and Page Down move the focus end of the
+// page selection, which is the caret while caret browsing: by character (by
+// word with Ctrl), by line, to the start or end of the line (of the page with
+// Ctrl), or by a screenful. With Shift they extend the selection, including
+// from an empty one left by a click; without Shift, which needs caret
+// browsing, they move the caret and leave nothing selected. Returns false if
+// the key is not one of these or there is no caret to move.
+caret_key :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers) -> bool {
+	extend := .Shift in mods
+	if !b.lay_valid || !(b.caret_browsing || (extend && b.has_selection)) {
 		return false
 	}
+	ensure_caret(b)
 	i := item_index_of(b, b.sel_focus.handle)
 	if i < 0 {
 		return false
@@ -386,24 +399,65 @@ extend_selection_key :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers)
 	offset := min(b.sel_focus.offset, len(b.lay.items[i].text))
 	pos := Text_Pos{b.sel_focus.handle, offset}
 	here := caret_rect(b, i, offset)
+	vertical := false
 	switch key {
 	case sdl.K_LEFT, sdl.K_RIGHT:
-		pos = step_pos(b, i, offset, key == sdl.K_LEFT, .Ctrl in mods)
+		left := key == sdl.K_LEFT
+		if ai, ao, zi, zo, ok := selection_span(b); ok && !extend && (ai != zi || ao != zo) {
+			// Collapse the selection to the end the arrow points at.
+			pos = {b.lay.items[ai].handle, ao} if left else {b.lay.items[zi].handle, zo}
+		} else {
+			pos = step_pos(b, i, offset, left, .Ctrl in mods)
+		}
 	case sdl.K_UP, sdl.K_DOWN:
 		if b.sel_goal_at != b.sel_focus {
 			b.sel_goal_x = here.x
 		}
 		pos = vertical_pos(b, here, key == sdl.K_UP, b.sel_goal_x, pos)
+		vertical = true
 	case sdl.K_HOME, sdl.K_END:
-		vw, _ := viewport_size(b)
-		if p, ok := pos_at_point(b, 0 if key == sdl.K_HOME else vw, here.y + here.h / 2); ok {
-			pos = p
+		if .Ctrl in mods {
+			first, last := text_item_bounds(b)
+			if first < 0 {
+				return false
+			}
+			pos = {b.lay.items[first].handle, 0} if key == sdl.K_HOME else {b.lay.items[last].handle, len(b.lay.items[last].text)}
+		} else {
+			// The line starts at the left, or at the right in a right-to-left paragraph.
+			root := b.lay.items[i].inline_root if b.lay.items[i].inline_root >= 0 else i
+			vw, _ := viewport_size(b)
+			if p, ok := pos_at_point(b, 0 if (key == sdl.K_HOME) != b.lay.items[root].rtl else vw, here.y + here.h / 2); ok {
+				pos = p
+			}
 		}
+	case sdl.K_PAGEUP, sdl.K_PAGEDOWN:
+		// Scroll a screenful and keep the caret at the same height in the
+		// window; at either end of the page, move it a screenful anyway.
+		up := key == sdl.K_PAGEUP
+		if b.sel_goal_at != b.sel_focus {
+			b.sel_goal_x = here.x
+		}
+		_, vh := viewport_size(b)
+		page := (vh - SCROLL_STEP) * (-1 if up else 1)
+		old := b.scroll_y
+		scroll_by(b, page)
+		moved := b.scroll_y - old
+		y := clamp(here.y + here.h / 2 + (moved if moved != 0 else page), 0, max(b.lay.height - 1, 0))
+		if p, ok := pos_at_point(b, b.sel_goal_x, y); ok {
+			pos = p
+		} else if first, _ := text_item_bounds(b); up && first >= 0 {
+			pos = {b.lay.items[first].handle, 0}
+		}
+		vertical = true
 	case:
 		return false
 	}
 	b.sel_focus = pos
-	if key == sdl.K_UP || key == sdl.K_DOWN {
+	if !extend {
+		b.sel_anchor = pos
+	}
+	b.has_selection = true
+	if vertical {
 		b.sel_goal_at = pos
 	}
 	if j := item_index_of(b, pos.handle); j >= 0 {
@@ -472,6 +526,76 @@ step_pos :: proc(b: ^Browser, i, offset: int, back, word: bool) -> Text_Pos {
 		}
 	}
 	return {item.handle, offset}
+}
+
+// Whether the page caret is showing: caret browsing is on, the tab has a
+// selection, and no field has the keyboard.
+page_caret_wanted :: proc(b: ^Browser) -> bool {
+	return b.caret_browsing && b.loaded && b.lay_valid && b.has_selection && focused_field(b) == .None
+}
+
+// While caret browsing, gives the tab a caret if it has none (a new page, or
+// the node it was in is gone): the start of the first text in view, else of
+// the last text above it. Placing it does not scroll.
+ensure_caret :: proc(b: ^Browser) {
+	if !b.caret_browsing || !b.loaded || !b.lay_valid {
+		return
+	}
+	if _, _, _, _, ok := selection_span(b); ok {
+		return
+	}
+	pick := -1
+	for &item, i in b.lay.items {
+		if is_text_item(&item) {
+			pick = i
+			if item.text_rect.y + item.text_rect.h > b.scroll_y {
+				break
+			}
+		}
+	}
+	if pick < 0 {
+		return
+	}
+	pos := Text_Pos{b.lay.items[pick].handle, 0}
+	b.sel_anchor, b.sel_focus = pos, pos
+	b.has_selection = true
+	b.selecting = false
+	b.dirty = true
+}
+
+// Draws the caret-browsing caret in the colour of the text it sits in.
+draw_page_caret :: proc(b: ^Browser, dy: f32) {
+	if !b.caret_shown || !page_caret_wanted(b) {
+		return
+	}
+	i := item_index_of(b, b.sel_focus.handle)
+	if i < 0 {
+		return
+	}
+	item := &b.lay.items[i]
+	offset := min(b.sel_focus.offset, len(item.text))
+	color := item.style.color
+	for f in b.lay.fragments[item.frag_first:][:item.frag_count] {
+		if offset >= f.start && offset <= f.end {
+			color = f.color
+			break
+		}
+	}
+	r := caret_rect(b, i, offset)
+	fill_rect(b, {r.x, r.y + dy + 2, 1.5, r.h - 4}, color)
+}
+
+// The address of the link the page caret is in, or "".
+caret_link :: proc(b: ^Browser) -> string {
+	if !page_caret_wanted(b) {
+		return ""
+	}
+	i := item_index_of(b, b.sel_focus.handle)
+	if i < 0 {
+		return ""
+	}
+	link := layout.find_ancestor(&b.lay, i, {.Link})
+	return b.lay.items[link].href if link >= 0 else ""
 }
 
 // A zero-width rectangle at `offset` in item `i`, one line tall.

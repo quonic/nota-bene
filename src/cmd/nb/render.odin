@@ -134,6 +134,7 @@ render :: proc(b: ^Browser) {
 			}
 			draw_item(b, &item, i, CHROME_HEIGHT - b.scroll_y)
 		}
+		draw_page_caret(b, CHROME_HEIGHT - b.scroll_y)
 	}
 	if b.error != "" {
 		draw_banner(b, vw)

@@ -300,10 +300,16 @@ caret_visible :: proc(b: ^Browser) -> bool {
 	return (time.tick_since(b.caret_since) / CARET_BLINK) % 2 == 0
 }
 
+// Whether any caret is showing: a focused field's, or the page caret while
+// caret browsing.
+caret_wanted :: proc(b: ^Browser) -> bool {
+	return focused_field(b) != .None || page_caret_wanted(b)
+}
+
 // Milliseconds until the caret next turns on or off, or -1 if it does not
 // blink right now.
 caret_next_toggle_ms :: proc(b: ^Browser) -> i32 {
-	if b.no_blink || !b.window_focused || focused_field(b) == .None {
+	if b.no_blink || !b.window_focused || !caret_wanted(b) {
 		return -1
 	}
 	elapsed := time.tick_since(b.caret_since)

@@ -244,6 +244,11 @@ browser_shortcut :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers) -> 
 		}
 	case ctrl && key == 'f':
 		open_find(b)
+	case key == sdl.K_F7:
+		b.caret_browsing = !b.caret_browsing
+		ensure_caret(b)
+		reset_caret_blink(b)
+		set_message(b, "caret browsing on" if b.caret_browsing else "caret browsing off")
 	case key == sdl.K_F3:
 		if !b.find_open {
 			open_find(b)
@@ -322,8 +327,12 @@ handle_key :: proc(b: ^Browser, e: sdl.KeyboardEvent) {
 				set_focus(b, abi.INVALID_HANDLE)
 				return
 			}
-		case extend_selection_key(b, e.key, mods):
-			// Shift+arrows moved the selection instead of scrolling.
+		case is_enter(e.key) && caret_link(b) != "":
+			// Caret browsing: Enter follows the link the caret is in.
+			navigate(b, caret_link(b), new_tab_ = .Ctrl in mods)
+			return
+		case caret_key(b, e.key, mods):
+			// The caret (or Shift+arrows, the selection) moved instead of scrolling.
 		case:
 			_, vh := viewport_size(b)
 			switch e.key {

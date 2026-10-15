@@ -123,6 +123,10 @@ Browser :: struct {
 	caret_shown:    bool,      // whether the last frame drew the caret
 	window_focused: bool,
 	no_blink:       bool, // scripted runs keep the caret solid, so screenshots are repeatable
+
+	// Caret browsing (select.odin): F7 shows each tab's selection focus as a
+	// caret that the arrows move.
+	caret_browsing: bool,
 }
 
 // Logical (layout) size of the content area, which sits between the

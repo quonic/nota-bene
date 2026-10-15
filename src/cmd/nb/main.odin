@@ -36,8 +36,8 @@ options:
   --print-clipboard   print the clipboard's text to stdout (for scripted checks)
   --type TEXT         after the page settles, type TEXT (repeatable)
   --key NAME          after the page settles, press a key: enter, escape, tab, backspace,
-                      delete, left, right, up, down, home, end or a letter, optionally
-                      with ctrl+ and/or shift+ in front (repeatable)
+                      delete, left, right, up, down, home, end, pageup, pagedown, f7
+                      or a letter, optionally with ctrl+ and/or shift+ in front (repeatable)
   --screenshot FILE   save a PNG of the window after the page settles, then exit
   -h, --help          show this help
 
@@ -45,7 +45,9 @@ keys: Ctrl+L / F6 address bar, F5 / Ctrl+R reload, Alt+Left back,
       Tab next input, F12 dump the view tree; in text fields, Shift and Ctrl
       with the arrows select and move by word, Ctrl+Z / Ctrl+Y undo and redo;
       in a text area, Enter adds a line and Ctrl+Enter goes to the page;
-      on page text, Shift+arrows, Home and End extend the selection
+      on page text, Shift+arrows, Home and End extend the selection;
+      F7 caret browsing: the arrows, Home, End and Page keys move a caret
+      in page text (Ctrl+Home / Ctrl+End to either end), Enter follows a link
 `
 
 Action :: struct {
@@ -165,7 +167,8 @@ run :: proc(opts: Options) -> int {
 		run_tabs(&b)
 		sync_selection(&b) // a selection the page placed shows in this frame
 		update_layout(&b)
-		if focused_field(&b) != .None && caret_visible(&b) != b.caret_shown {
+		ensure_caret(&b)
+		if caret_wanted(&b) && caret_visible(&b) != b.caret_shown {
 			b.dirty = true
 		}
 		if b.dirty || (b.loaded && b.painted != b.page.paint_version) {
@@ -489,12 +492,18 @@ parse_args :: proc(args: []string) -> (opts: Options, ok: bool) {
 				key = sdl.K_HOME
 			case "end":
 				key = sdl.K_END
+			case "pageup":
+				key = sdl.K_PAGEUP
+			case "pagedown":
+				key = sdl.K_PAGEDOWN
+			case "f7":
+				key = sdl.K_F7
 			case:
 				if len(name) == 1 && name[0] >= 'a' && name[0] <= 'z' {
 					key = sdl.Keycode(name[0])
 				} else {
 					fmt.eprintfln(
-						"nb: --key takes [ctrl+][shift+] and enter, escape, tab, backspace, delete, an arrow, home, end or a letter",
+						"nb: --key takes [ctrl+][shift+] and enter, escape, tab, backspace, delete, an arrow, home, end, pageup, pagedown, f7 or a letter",
 					)
 					return opts, false
 				}

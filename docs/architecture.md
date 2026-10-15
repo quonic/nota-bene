@@ -247,6 +247,12 @@ contains pages written directly in assembly.
      - Shift+click and Shift with the arrows, Home or End extend a selection,
        including from an empty one left by a plain click. Up and Down keep
        their column across short lines and skip the gaps between blocks.
+     - **Caret browsing (F7)** draws the selection's focus end as a caret
+       and lets the plain arrows, Home, End and Page keys move it, so
+       keyboard users can read, select and copy text and follow links
+       (Enter). It is the same position Shift+arrows extend, so both share
+       one set of moves. Each tab keeps its own caret; a new page gets one
+       at the first text in view.
      - Ctrl+F matches case-insensitively and scrolls each match into view.
      - Positions are kept as (node handle, byte offset), so they survive
        re-layout.
@@ -304,7 +310,6 @@ contains pages written directly in assembly.
 Later ideas:
 
 - a history and bookmarks view
-- a visible, keyboard-driven caret on pages (caret browsing, F7)
 - an accessibility bridge: the semantic tree maps directly onto platform accessibility APIs
 - a pre-decoded instruction cache (W^X makes it safe)
 - a GDB remote stub hooked to `ebreak`

@@ -39,7 +39,7 @@ The ISA tests build every fixture twice, with C (`.c.elf`) and without
 | Memory | Little-endian. Misaligned loads and stores are allowed. Every access is bounds- and permission-checked per 4 KiB page. |
 | `fence`, `fence.i` | No-ops (single hart, no caches). |
 | `ecall` | The VM stops with `Ecall` and the pc already past the instruction. The host writes the result to `a0` and resumes. |
-| `ebreak` | The VM stops with `Ebreak` and the pc at the instruction. The host currently kills the page; reserved for a debugger. |
+| `ebreak` | The VM stops with `Ebreak` and the pc at the instruction. Under `nbrun --gdb` the debugger gets a SIGTRAP stop; otherwise the host kills the page. See [Debugging](architecture.md#debugging). |
 | LR/SC | A single reservation. Any SC clears it. AMOs must be naturally aligned (`Misaligned_Atomic` otherwise). |
 | CSRs | `fflags`, `frm` and `fcsr` are read/write. `cycle` and `instret` are read-only and both return the retired-instruction count. `time` is **not implemented** (illegal instruction): pages get no high-resolution clock. |
 | Float arithmetic | Uses host IEEE-754 round-to-nearest-even regardless of `rm`. |

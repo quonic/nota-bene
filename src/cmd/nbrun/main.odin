@@ -1,13 +1,16 @@
 // nbrun runs a page headlessly: no window, no network. It prints the page's
-// log, can trace syscalls or instructions, and can dump the view tree.
+// log, can trace syscalls or instructions, can dump the view tree, and can
+// let GDB debug the page (--gdb).
 package main
 
 import "core:fmt"
+import "core:net"
 import "core:os"
 import "core:strconv"
 import "core:strings"
 
 import "../../abi"
+import "../../gdbstub"
 import "../../host"
 import "../../loader"
 import "../../vm"
@@ -22,10 +25,13 @@ options:
   --trace-inst   print every instruction (slow)
   --dump-tree    print the view tree when the page stops
   --storage FILE keep the page's storage in FILE (default: memory only)
+  --gdb PORT     wait for GDB on 127.0.0.1:PORT before the first instruction;
+                 then run gdb page.elf and type target remote :PORT
   -h, --help     show this help
 
 exit status: the page's exit code if it exits; 2 usage or load error;
-3 the page faulted; 4 the page was stopped (budget, ebreak, idle forever).
+3 the page faulted; 4 the page was stopped (budget, ebreak, idle forever,
+killed from GDB).
 `
 
 Options :: struct {
@@ -36,9 +42,12 @@ Options :: struct {
 	trace_inst: bool,
 	dump_tree:  bool,
 	storage:    string,
+	gdb_port:   int, // 0: no debugger
 }
 
 SLICE :: 1_000_000
+// Under GDB the socket is polled for Ctrl-C between slices, so they are shorter.
+GDB_SLICE :: 100_000
 
 main :: proc() {
 	opts, ok := parse_args(os.args[1:])
@@ -70,7 +79,7 @@ main :: proc() {
 		fmt.eprintfln("nbrun: warning: unknown manifest key %q", key)
 	}
 
-	idle := run(&page, opts)
+	idle := debug(&page, opts) if opts.gdb_port != 0 else run(&page, opts)
 
 	if opts.dump_tree {
 		sb := strings.builder_make()
@@ -92,7 +101,7 @@ main :: proc() {
 	case .Killed:
 		fmt.eprintfln("nbrun: page stopped: %s (after %d instructions)", page.kill_reason, instret)
 		os.exit(4)
-	case .Running, .Waiting:
+	case .Running, .Waiting, .Break:
 		if idle {
 			fmt.eprintln("nbrun: page is waiting for events forever after Quit; stopping it")
 		}
@@ -119,21 +128,107 @@ run :: proc(page: ^host.Page, opts: Options) -> (idle: bool) {
 		switch state {
 		case .Running:
 		case .Waiting:
-			// Headless: there are no input sources, so a timed wait completes
-			// immediately on a skipped-ahead clock and an unbounded wait is
-			// answered with Quit, once.
-			if host.page_skip_to_deadline(page) {
-				continue
-			}
-			if !page.quit_sent {
-				host.page_push_event(page, abi.Event{kind = .Quit})
+			if headless_wake(page) {
 				continue
 			}
 			return true
-		case .Exited, .Faulted, .Killed:
+		case .Exited, .Faulted, .Killed, .Break:
 			return false
 		}
 	}
+}
+
+// Headless: there are no input sources, so a timed wait completes
+// immediately on a skipped-ahead clock and an unbounded wait is answered
+// with Quit, once. Returns false if the page would wait forever.
+headless_wake :: proc(page: ^host.Page) -> bool {
+	if host.page_skip_to_deadline(page) {
+		return true
+	}
+	if !page.quit_sent {
+		host.page_push_event(page, abi.Event{kind = .Quit})
+		return true
+	}
+	return false
+}
+
+// Serves one GDB client on 127.0.0.1 and runs the page under it. The page
+// does not start until GDB says so. If GDB detaches, the page runs on as
+// without --gdb.
+debug :: proc(page: ^host.Page, opts: Options) -> (idle: bool) {
+	listener, err := net.listen_tcp({net.IP4_Loopback, opts.gdb_port}, 1)
+	if err != nil {
+		fmt.eprintfln("nbrun: cannot listen on 127.0.0.1:%d: %v", opts.gdb_port, err)
+		os.exit(2)
+	}
+	fmt.eprintfln("nbrun: waiting for GDB on 127.0.0.1:%d", opts.gdb_port)
+	client, _, aerr := net.accept_tcp(listener)
+	net.close(listener) // one client
+	if aerr != nil {
+		fmt.eprintfln("nbrun: accepting GDB failed: %v", aerr)
+		os.exit(2)
+	}
+	defer net.close(client)
+	net.set_option(client, .TCP_Nodelay, true)
+
+	s: gdbstub.Session
+	gdbstub.session_init(&s, page, opts.budget, headless_wake)
+	defer gdbstub.session_destroy(&s)
+
+	buf: [4096]u8
+	blocking := true
+	connected := true
+	for connected && s.done == .No {
+		connected = send_all(client, s.out[:])
+		clear(&s.out)
+		// Block while GDB has the page stopped; poll while it runs, so
+		// Ctrl-C (0x03) can interrupt it between slices.
+		if running := gdbstub.session_running(&s); running == blocking {
+			blocking = !running
+			net.set_blocking(client, blocking)
+		}
+		n, rerr := net.recv_tcp(client, buf[:])
+		#partial switch rerr {
+		case .None:
+			if n == 0 {
+				connected = false // GDB went away
+			}
+		case .Would_Block, .Interrupted:
+		case:
+			connected = false
+		}
+		gdbstub.session_feed(&s, buf[:n])
+		gdbstub.session_run(&s, GDB_SLICE)
+	}
+	if connected {
+		send_all(client, s.out[:]) // the reply to D or vKill
+	}
+
+	switch s.done {
+	case .Detached:
+		fmt.eprintln("nbrun: GDB detached; running on")
+		return run(page, opts)
+	case .Killed:
+	case .No:
+		if s.mode != .Ended {
+			host.page_kill(page, "GDB disconnected")
+		}
+	}
+	return false
+}
+
+send_all :: proc(sock: net.TCP_Socket, data: []u8) -> bool {
+	for sent := 0; sent < len(data); {
+		n, err := net.send_tcp(sock, data[sent:])
+		if err == .Would_Block || err == .Interrupted {
+			continue
+		}
+		if err != nil {
+			return false
+		}
+		sent += n
+	}
+	return true
 }
 
 log_line :: proc(p: ^host.Page, level: abi.Log_Level, msg: string) {
@@ -209,6 +304,14 @@ parse_args :: proc(args: []string) -> (opts: Options, ok: bool) {
 			opts.dump_tree = true
 		case "--storage":
 			opts.storage = value(args, &i) or_return
+		case "--gdb":
+			v := value(args, &i) or_return
+			port := strconv.parse_int(v, 10) or_return
+			if port < 1 || port > 65535 {
+				fmt.eprintfln("nbrun: bad port %q", v)
+				return opts, false
+			}
+			opts.gdb_port = port
 		case:
 			if strings.has_prefix(arg, "-") || opts.path != "" {
 				fmt.eprintfln("nbrun: unexpected argument %q", arg)
@@ -216,6 +319,10 @@ parse_args :: proc(args: []string) -> (opts: Options, ok: bool) {
 			}
 			opts.path = arg
 		}
+	}
+	if opts.gdb_port != 0 && opts.trace_inst {
+		fmt.eprintln("nbrun: --trace-inst cannot be used with --gdb")
+		return opts, false
 	}
 	return opts, opts.path != ""
 }

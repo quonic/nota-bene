@@ -35,6 +35,7 @@ and no JavaScript runtime.
 | `src/layout`    | `layout` | Turns the view tree into positioned boxes. Text measurement is pluggable, so it is tested without graphics.                                                                                           |
 | `src/cmd/nb`    | `main`   | The browser window: SDL3 for windowing, input and drawing, SDL3_ttf (FreeType and HarfBuzz) for text.                                                                                                 |
 | `src/cmd/nbrun` | `main`   | Headless runner for development and tests.                                                                                                                                                            |
+| `src/gdbstub`   | `gdbstub` | GDB remote protocol for `nbrun --gdb`. No I/O; the runner owns the socket.                                                                                                                            |
 | `src/proto`     | `proto`  | NB/1: framing, Noise sessions, messages, bundles, `nb://` URLs, key pinning.                                                                                                                          |
 | `src/server`    | `server` | Serves bundles from a directory, one thread per connection. Used by `nbd` and the tests.                                                                                                              |
 | `src/cmd/nbd`   | `main`   | The page server.                                                                                                                                                                                      |
@@ -233,6 +234,55 @@ Why each piece exists (all found while setting this up):
 Any language that compiles to RV64GC can target the same ABI. `tests/asm`
 contains pages written directly in assembly.
 
+## Debugging
+
+`nbrun --gdb PORT page.elf` lets GDB debug a page. nbrun listens on
+127.0.0.1 only, takes one client, and runs nothing until GDB connects.
+
+```log
+$ nbrun --gdb 1234 build/tests/gdb.nc.elf &
+$ gdb build/tests/gdb.nc.elf
+(gdb) target remote :1234
+0x0000000000010000 in _start ()
+(gdb) break *target
+Breakpoint 1 at 0x10020
+(gdb) continue
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0000000000010018 in _start ()
+(gdb) continue
+Breakpoint 1, 0x0000000000010020 in target ()
+(gdb) x/2i $pc
+=> 0x10020 <target>:	addi	a0,a0,4
+   0x10024 <target+4>:	ld	a4,0(a3)
+(gdb) stepi
+0x0000000000010024 in target ()
+(gdb) continue
+[Inferior 1 (Remote target) exited with code 07]
+```
+
+- **The stub** is `src/gdbstub`. It does no I/O: nbrun passes it the bytes
+  from the socket and sends what it returns, so its tests need no network.
+  It tells GDB the target is riscv:rv64, with the integer registers, pc, f0
+  to f31, fflags, frm and fcsr.
+- **Breakpoints do not write to code.** Code pages are never writable, and
+  the VM may rely on that. The stub keeps breakpoints in its own table.
+  While any are set, it runs the page one instruction at a time and checks
+  pc before each one, which makes the page about half again slower. With no
+  breakpoints it runs slices of 100,000 instructions and checks for Ctrl-C
+  between them.
+- **`ebreak`** stops the page when a debugger is attached (`Page.debugger`;
+  the page goes to `Page_State.Break`). pc stays on the `ebreak` and GDB
+  reports SIGTRAP. Continuing or stepping goes past it. Without a debugger,
+  an `ebreak` still kills the page.
+- **Memory writes** from GDB go through the page's permissions. Writing to
+  code or to unmapped memory fails with "Cannot access memory".
+- **Stops.** A fault is SIGSEGV, or SIGILL for an illegal instruction. GDB
+  cannot continue past it: continuing ends the page. Syscalls and waits
+  work as they do without GDB. Exiting, the instruction budget and waiting
+  forever end the session.
+- **Detaching** (`detach`) lets the page run on without the debugger.
+  Quitting GDB kills it.
+
 ## Roadmap
 
 1. **VM and headless runner** (done). The interpreter, loader, syscalls, SDK,
@@ -334,7 +384,6 @@ Later ideas:
 
 - a history and bookmarks view
 - an accessibility bridge: the semantic tree maps directly onto platform accessibility APIs
-- a GDB remote stub hooked to `ebreak`
 - record and replay
 - hybrid post-quantum handshakes with ML-KEM
 - sending data, not just reading it: a request body, for servers that do more than serve files

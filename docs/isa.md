@@ -53,7 +53,7 @@ The ISA tests build every fixture twice, with C (`.c.elf`) and without
 A fault stops the page permanently. `vm.describe_fault` produces messages
 such as:
 
-```
+```log
 store to 0x10000 not permitted (pc 0x10008, 0x0002a023)
 illegal instruction 0x0000 at pc 0x12340 (unimp: an Odin runtime trap, e.g. a failed bounds check)
 ```
@@ -65,6 +65,6 @@ handler, so `assert` and `panic` instead log a message and exit with
 
 To see the instruction at a faulting pc:
 
-```
+```bash
 llvm-objdump -d --start-address=0x12340 --stop-address=0x12350 page.elf
 ```

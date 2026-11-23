@@ -364,7 +364,7 @@ Keys are 1 to 256 bytes of UTF-8. Values are at most 1 MiB.
 A page declares its needs in an ELF section named `.nb_manifest`. The section
 holds plain UTF-8 text with one `key value` pair per line:
 
-```
+```bash
 # comments start with '#'
 abi 1
 title Hello

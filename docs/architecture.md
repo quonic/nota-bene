@@ -5,7 +5,7 @@ executable, loads it into a sandboxed virtual machine, and the program builds
 what the user sees by making syscalls. There is no HTML parser, no CSS engine
 and no JavaScript runtime.
 
-```
+```odin
  ┌───────────────────── browser process ─────────────────────┐
  │                                                           │
  │  front end: nb (SDL3 window) or nbrun (headless)          │
@@ -60,7 +60,7 @@ and no JavaScript runtime.
 
 ## Guest memory
 
-```
+```odin
 0x0000_0000 ┬─────────────────────────┐
             │ null guard (64 KiB)     │ unmapped: null dereferences fault
 0x0001_0000 ├─────────────────────────┤

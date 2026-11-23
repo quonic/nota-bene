@@ -32,6 +32,7 @@ and no JavaScript runtime.
 | `src/host`      | `host`   | The page object: drives the VM, dispatches syscalls, owns the handle table and the view tree, and checks fetches against the manifest. No I/O; front ends plug in through callbacks (logging, fetch). |
 | `src/field`     | `field`  | Text editing: caret, selection, moves by grapheme cluster and by word, undo. It works on bytes, and leaves wrapped lines to `nb`. Used by `nb` for the address bar, the find bar, page Inputs and Text_Areas. |
 | `src/text`      | `text`   | Unicode text segmentation over kb_text_shape: line break opportunities (UAX #14), grapheme clusters (UAX #29), and bidirectional runs and reordering (UAX #9). No fonts, so it is unit tested.  |
+| `src/places`    | `places` | The browser's history and bookmarks: visits, deduplication, the size limit, filtering, and the files in the profile. Pages cannot reach it.                                                           |
 | `src/layout`    | `layout` | Turns the view tree into positioned boxes. Text measurement is pluggable, so it is tested without graphics.                                                                                           |
 | `src/cmd/nb`    | `main`   | The browser window: SDL3 for windowing, input and drawing, SDL3_ttf (FreeType and HarfBuzz) for text.                                                                                                 |
 | `src/cmd/nbrun` | `main`   | Headless runner for development and tests.                                                                                                                                                            |
@@ -334,6 +335,25 @@ Breakpoint 1, 0x0000000000010020 in target ()
        direction.
    - **Per-site storage** with quotas from the manifest, keyed by the
      server's verified key.
+   - **History and bookmarks.** Every page that loads is recorded with its
+     address, a title (the manifest's `title`, else the page's first
+     heading) and the time. A page visited again moves to the top; the 1000
+     most recent are kept.
+     - Ctrl+D or the star after the address bar bookmarks the page, or
+       removes its bookmark. The star is filled while the page is
+       bookmarked.
+     - Ctrl+H shows the history and Ctrl+Shift+O the bookmarks, newest
+       first, in a panel over the page. Typing filters by title or address.
+       Up and Down choose, Enter or a click opens the entry, and Ctrl+Enter,
+       Ctrl+click or a middle click opens it in a new tab. Shift+Delete or
+       the × removes it, and Esc closes the panel.
+     - Both lists live in the profile, in `history` and `bookmarks`: one
+       `time<TAB>address<TAB>title` line per entry. Each change writes a
+       temporary file and renames it over the old one, and a damaged line is
+       skipped when the file is read.
+     - `src/places` keeps the lists. It has no graphics, so it is unit
+       tested. Only the browser reads them: no syscall gives a page its
+       history or bookmarks.
 5. **Pages fetch data** (done). `Fetch_Open` and `Fetch_Read` reach only the
    servers named in the manifest's `fetch` lines. `fetch /` means the page's
    own server, held to the key the page was loaded from.
@@ -382,7 +402,6 @@ Breakpoint 1, 0x0000000000010020 in target ()
 
 Later ideas:
 
-- a history and bookmarks view
 - an accessibility bridge: the semantic tree maps directly onto platform accessibility APIs
 - record and replay
 - hybrid post-quantum handshakes with ML-KEM

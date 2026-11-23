@@ -23,6 +23,7 @@ KEY_FIND_COUNT :: KEY_STATUS_LEFT + 22
 
 open_find :: proc(b: ^Browser) {
 	set_address_focus(b, false)
+	close_panel(b)
 	b.find_open = true
 	b.find_focus = true
 	field.select_all(&b.find) // typing replaces the last query

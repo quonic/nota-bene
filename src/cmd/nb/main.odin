@@ -26,7 +26,8 @@ options:
   --size WxH          initial window size in px (default 900x700)
   --font FILE         TrueType font to use (also: NB_FONT)
   --mem SIZE          guest memory per page (default 64M)
-  --profile DIR       pinned server keys and site storage (default ~/.config/new-browser)
+  --profile DIR       pinned server keys, site storage, history and bookmarks
+                      (default ~/.config/new-browser)
   --click X,Y         after the page settles, click at X,Y (repeatable)
   --middle-click X,Y  after the page settles, middle-click at X,Y (repeatable)
   --double-click X,Y  after the page settles, double-click at X,Y (repeatable)
@@ -42,7 +43,11 @@ options:
   -h, --help          show this help
 
 keys: Ctrl+L / F6 address bar, F5 / Ctrl+R reload, Alt+Left back,
-      Tab next input, F12 dump the view tree; in text fields, Shift and Ctrl
+      Tab next input, F12 dump the view tree, Ctrl+F find,
+      Ctrl+H history, Ctrl+Shift+O bookmarks, Ctrl+D bookmark the page;
+      in history and bookmarks, type to filter, Up / Down choose, Enter opens
+      (Ctrl+Enter or a middle click in a new tab), Shift+Delete removes,
+      Esc closes; in text fields, Shift and Ctrl
       with the arrows select and move by word, Ctrl+Z / Ctrl+Y undo and redo;
       in a text area, Enter adds a line and Ctrl+Enter goes to the page;
       on page text, Shift+arrows, Home and End extend the selection;
@@ -146,6 +151,8 @@ run :: proc(opts: Options) -> int {
 	proto.known_hosts_load(&b.known_hosts, kh_path)
 	b.pool = proto.pool_create()
 	defer net_shutdown(&b)
+	places_init(&b)
+	defer places_destroy(&b)
 	defer field.destroy(&b.address)
 	defer field.destroy(&b.find)
 
@@ -329,7 +336,9 @@ handle_event :: proc(b: ^Browser, ev: sdl.Event) {
 			click(b, ev.button.x, ev.button.y, modifiers(sdl.GetModState()), middle = true)
 		}
 	case .MOUSE_WHEEL:
-		if !area_wheel(b, ev.wheel.mouse_x, ev.wheel.mouse_y, -ev.wheel.y * SCROLL_STEP) {
+		if panel_wheel(b, ev.wheel.mouse_x, ev.wheel.mouse_y, -ev.wheel.y) {
+			// the history or bookmarks list scrolled
+		} else if !area_wheel(b, ev.wheel.mouse_x, ev.wheel.mouse_y, -ev.wheel.y * SCROLL_STEP) {
 			scroll_by(b, -ev.wheel.y * SCROLL_STEP)
 		}
 	case .KEY_DOWN, .KEY_UP:

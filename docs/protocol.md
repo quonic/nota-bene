@@ -146,6 +146,8 @@ and back send its hash as `have`, so an unchanged page costs only a 304.
 | `--sign FILE` | the publisher's ed25519 private key, hex. Created on first use. |
 | `~/.config/new-browser/known_hosts` | pinned server keys, one `host:port key` per line. `nb --profile DIR` moves the whole profile, and `$XDG_CONFIG_HOME` and `%APPDATA%` are honoured. |
 | `~/.config/new-browser/storage/` | per-site storage (see [syscalls.md](syscalls.md#storage-0x400)) |
+| `~/.config/new-browser/history` | pages the user loaded, one `time<TAB>address<TAB>title` line each (Unix seconds), oldest first. At most 1000. |
+| `~/.config/new-browser/bookmarks` | bookmarks, in the same form as `history` |
 
 ## Not yet implemented
 

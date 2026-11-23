@@ -142,6 +142,9 @@ render :: proc(b: ^Browser) {
 		draw_blank_tab(b, vw)
 	}
 	sdl.SetRenderClipRect(b.renderer, nil)
+	if b.panel != .None {
+		draw_panel(b)
+	}
 	draw_tabbar(b, vw)
 	draw_toolbar(b, vw)
 	if b.find_open {

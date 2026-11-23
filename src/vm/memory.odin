@@ -20,19 +20,27 @@ PERMS_RW   :: Perms{.Read, .Write}
 // Memory is a page's flat guest address space. Guest address N is data[N].
 // Every access is bounds-checked and checked against per-4KiB-page permissions,
 // which is how the null guard, W^X and stack guard are enforced.
+//
+// Once code has run, change permissions only through memory_protect: it keeps
+// the instruction cache (icache.odin) in step.
 Memory :: struct {
-	data:  []u8,
-	perms: []Perms,
+	data:      []u8,
+	perms:     []Perms,
+	code:      Code_Cache,
+	allocator: mem.Allocator, // for the instruction cache
 }
 
 memory_init :: proc(m: ^Memory, size: u64, allocator := context.allocator) -> mem.Allocator_Error {
 	assert(size % PAGE_SIZE == 0 && size > 0)
+	m.code = {}
+	m.allocator = allocator
 	m.data = make([]u8, int(size), allocator) or_return
 	m.perms = make([]Perms, int(size / PAGE_SIZE), allocator) or_return
 	return nil
 }
 
 memory_destroy :: proc(m: ^Memory, allocator := context.allocator) {
+	cache_reset(m)
 	delete(m.data, allocator)
 	delete(m.perms, allocator)
 	m^ = {}
@@ -42,8 +50,12 @@ memory_size :: #force_inline proc "contextless" (m: ^Memory) -> u64 {
 	return u64(len(m.data))
 }
 
-// Sets permissions for every page overlapping [addr, addr+size).
+// Sets permissions for every page overlapping [addr, addr+size). Refuses
+// writable and executable together (W^X), which the instruction cache relies on.
 memory_protect :: proc(m: ^Memory, addr, size: u64, perms: Perms) -> bool {
+	if .Write in perms && .Exec in perms {
+		return false
+	}
 	if size == 0 {
 		return true
 	}
@@ -51,8 +63,13 @@ memory_protect :: proc(m: ^Memory, addr, size: u64, perms: Perms) -> bool {
 	if end < addr || end > memory_size(m) {
 		return false
 	}
+	code_changed := .Exec in perms
 	for p := addr >> PAGE_SHIFT; p <= (end - 1) >> PAGE_SHIFT; p += 1 {
+		code_changed ||= .Exec in m.perms[p]
 		m.perms[p] = perms
+	}
+	if code_changed {
+		cache_reset(m)
 	}
 	return true
 }

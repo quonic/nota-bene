@@ -55,7 +55,7 @@ Serve pages over the network and browse them:
 ./build/nb nb://localhost/feed    # a page that fetches build/site/feed.txt
 ```
 
-On the first visit, `nb` pins the server's key in `~/.config/new-browser/known_hosts`. Site storage also lives in that directory; use `--profile DIR` to point `nb` somewhere else. Later visits fail loudly if the server cannot prove it holds that key. `nbd --sign publisher.key` also signs every page, and `nb` shows who signed it in the status bar.
+On the first visit, `nb` pins the server's key in `~/.config/new-browser/known_hosts`. Site storage, `history` and `bookmarks` also live in that directory; use `--profile DIR` to point `nb` somewhere else. Later visits fail loudly if the server cannot prove it holds that key. `nbd --sign publisher.key` also signs every page, and `nb` shows who signed it in the status bar.
 
 Keys:
 
@@ -66,6 +66,8 @@ Keys:
 - F7: caret browsing. A caret in the page text moves with the arrows (by word with Ctrl), Home and End (the whole page with Ctrl), Page Up and Page Down; Shift selects as it goes, and Enter follows the link the caret is in
 - Ctrl+F: find in page. Enter or F3: next match. Shift+Enter or Shift+F3: previous match. Esc: close
 - In the address bar, the find bar and page inputs: the arrows, Home and End move the caret (by word with Ctrl, selecting with Shift), the mouse places it and selects, Ctrl+C, Ctrl+X, Ctrl+V copy, cut and paste, and Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) undo and redo
+- Ctrl+D or the star after the address bar: bookmark the page, or remove its bookmark
+- Ctrl+H: history. Ctrl+Shift+O: bookmarks. Type to filter, Up and Down to choose, Enter or a click to open (Ctrl+Enter, Ctrl+click or a middle click for a new tab), Shift+Delete or the × to remove, Esc to close
 - F5 or Ctrl+R: reload
 - Alt+Left: back
 - Tab: next input

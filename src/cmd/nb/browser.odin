@@ -15,6 +15,7 @@ import "../../abi"
 import "../../host"
 import "../../layout"
 import "../../loader"
+import "../../places"
 import "../../proto"
 
 TABBAR_HEIGHT     :: 30
@@ -47,6 +48,7 @@ Tab :: struct {
 	error:       string, // load error or why the page stopped
 	message:     string, // transient status-bar message
 	history:     [dynamic]string,
+	title_pending: bool, // the history entry for this page waits for its first heading (places.odin)
 
 	lay:         layout.Result,
 	lay_version: u64,
@@ -127,6 +129,25 @@ Browser :: struct {
 	// Caret browsing (select.odin): F7 shows each tab's selection focus as a
 	// caret that the arrows move.
 	caret_browsing: bool,
+
+	// History and bookmarks (places.odin), shared by every tab. Pages never
+	// see them.
+	visited:      places.List,
+	bookmarks:    places.List,
+	panel:        Panel_Kind, // which list the panel shows, if it is open
+	panel_filter: Text_Field,
+	panel_rows:   [dynamic]string, // locations of the entries listed, fixed while the panel is open
+	panel_sel:    int,             // the selected row
+	panel_top:    int,             // the first row on screen
+	places_lock:  places.Lock,
+	places_shared: bool, // another browser holds the profile lock: the lists are read-only
+	places_warned: bool, // the status bar has said a list is not saved
+
+	// Input that belongs to an action already taken: the rest of a multiple
+	// click after it opened a row, and the release of the key that closed
+	// the panel. Neither reaches the page.
+	swallow_clicks: bool,
+	swallow_key_up: sdl.Keycode,
 }
 
 // Logical (layout) size of the content area, which sits between the
@@ -187,6 +208,7 @@ unload_page :: proc(b: ^Browser) {
 	b.scroll_y = 0
 	b.has_selection = false
 	b.selecting = false
+	b.title_pending = false
 	clear(&b.matches)
 	delete(b.hover_href)
 	b.hover_href = ""
@@ -265,6 +287,7 @@ load_page :: proc(b: ^Browser, location: string, elf: []u8, push_history := true
 	}
 
 	update_title(b)
+	record_visit(b, location)
 
 	w, h := viewport_size(b)
 	host.page_push_event(&b.page, abi.Event{kind = .Resize, a = i64(w), b = i64(h)})
@@ -378,6 +401,7 @@ update_layout :: proc(b: ^Browser) {
 	b.lay_valid = true
 	clamp_scroll(b, h)
 	b.dirty = true
+	update_visit_title(b)
 	if b.find_open {
 		keep := b.current_match
 		refresh_matches(b, scroll = first_layout)

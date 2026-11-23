@@ -582,22 +582,25 @@ test_image_set_data :: proc(t: ^testing.T) {
 		testing.expect_value(t, p.bitmap_bytes, 4 * 3 * 4)
 	}
 
-	// Baseline JPEG: four 16x16 quadrants, close to their colours at the centres.
-	testing.expect_value(t, host.node_set_image(&p, img, #load("../images/baseline.jpg")), abi.Errno.OK)
-	bm := host.node_get(&p, img).bitmap
-	testing.expect_value(t, bm.width, 32)
-	testing.expect_value(t, bm.height, 32)
-	for q in ([][3]int{{8, 8, 0xFF0000}, {24, 8, 0x00FF00}, {8, 24, 0x0000FF}, {24, 24, 0xFFFFFF}}) {
-		px := bm.pixels[4 * (q.y * 32 + q.x):][:4]
-		want := [3]int{q.z >> 16, q.z >> 8 & 0xFF, q.z & 0xFF}
-		for c in 0 ..< 3 {
-			testing.expectf(t, abs(int(px[c]) - want[c]) <= 8, "jpeg (%d,%d) is %v, want %v", q.x, q.y, px, want)
+	// Baseline and progressive JPEG: four 16x16 quadrants, close to their
+	// colours at the centres.
+	jpegs := [][]u8{#load("../images/baseline.jpg"), #load("../images/progressive.jpg")}
+	for jpeg, i in jpegs {
+		testing.expect_value(t, host.node_set_image(&p, img, jpeg), abi.Errno.OK)
+		bm := host.node_get(&p, img).bitmap
+		testing.expect_value(t, bm.width, 32)
+		testing.expect_value(t, bm.height, 32)
+		for q in ([][3]int{{8, 8, 0xFF0000}, {24, 8, 0x00FF00}, {8, 24, 0x0000FF}, {24, 24, 0xFFFFFF}}) {
+			px := bm.pixels[4 * (q.y * 32 + q.x):][:4]
+			want := [3]int{q.z >> 16, q.z >> 8 & 0xFF, q.z & 0xFF}
+			for c in 0 ..< 3 {
+				testing.expectf(t, abs(int(px[c]) - want[c]) <= 8, "jpeg %d (%d,%d) is %v, want %v", i, q.x, q.y, px, want)
+			}
+			testing.expect_value(t, px[3], 255)
 		}
-		testing.expect_value(t, px[3], 255)
 	}
 
 	// Failures leave the picture as it was.
-	testing.expect_value(t, host.node_set_image(&p, img, #load("../images/progressive.jpg")), abi.Errno.INVAL)
 	testing.expect_value(t, host.node_set_image(&p, img, #load("../images/wide.png")), abi.Errno.RANGE)
 	rgba := #load("../images/rgba.png")
 	testing.expect_value(t, host.node_set_image(&p, img, rgba[:len(rgba) / 2]), abi.Errno.INVAL)

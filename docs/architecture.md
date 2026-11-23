@@ -32,9 +32,11 @@ and no JavaScript runtime.
 | `src/host`      | `host`   | The page object: drives the VM, dispatches syscalls, owns the handle table and the view tree, and checks fetches against the manifest. No I/O; front ends plug in through callbacks (logging, fetch). |
 | `src/field`     | `field`  | Text editing: caret, selection, moves by grapheme cluster and by word, undo. It works on bytes, and leaves wrapped lines to `nb`. Used by `nb` for the address bar, the find bar, page Inputs and Text_Areas. |
 | `src/text`      | `text`   | Unicode text segmentation over kb_text_shape: line break opportunities (UAX #14), grapheme clusters (UAX #29), and bidirectional runs and reordering (UAX #9). No fonts, so it is unit tested.  |
+| `src/places`    | `places` | The browser's history and bookmarks: visits, deduplication, the size limit, filtering, and the files in the profile. Pages cannot reach it.                                                           |
 | `src/layout`    | `layout` | Turns the view tree into positioned boxes. Text measurement is pluggable, so it is tested without graphics.                                                                                           |
 | `src/cmd/nb`    | `main`   | The browser window: SDL3 for windowing, input and drawing, SDL3_ttf (FreeType and HarfBuzz) for text.                                                                                                 |
 | `src/cmd/nbrun` | `main`   | Headless runner for development and tests.                                                                                                                                                            |
+| `src/gdbstub`   | `gdbstub` | GDB remote protocol for `nbrun --gdb`. No I/O; the runner owns the socket.                                                                                                                            |
 | `src/proto`     | `proto`  | NB/1: framing, Noise sessions, messages, bundles, `nb://` URLs, key pinning.                                                                                                                          |
 | `src/server`    | `server` | Serves bundles from a directory, one thread per connection. Used by `nbd` and the tests.                                                                                                              |
 | `src/cmd/nbd`   | `main`   | The page server.                                                                                                                                                                                      |
@@ -79,7 +81,30 @@ heap_limit  ├─────────────────────�
 ```
 
 Permissions are tracked per 4 KiB page and checked on every access, including
-host access to syscall buffers. No page is ever both writable and executable.
+host access to syscall buffers. No page is ever both writable and executable;
+`memory_protect` refuses to make one.
+
+**Instruction cache.** The VM decodes each instruction once, the first time
+it runs, and keeps the result: an op, the register numbers, the immediate,
+the length and the expanded instruction (`src/vm/icache.odin`). Later runs
+skip the fetch, the permission checks and the decoding. Common integer
+instructions have their own op. The rest (CSRs, atomics, F and D, illegal
+encodings) go through the original executor, so faults stay exactly the same.
+
+- **Why it is safe.** W^X means no store, from the page or from the host, can
+  change code that is cached. Code changes only after `memory_protect` makes
+  a page writable. Any permission change that touches an executable page, to
+  or from Exec, drops the whole cache.
+- **Faults.** Only instructions that were fetched successfully are cached. A
+  fetch from a non-executable page, or a 4-byte instruction that runs into
+  one, faults as before.
+- **Size.** There is one 16-byte slot per 2 bytes from the first to the last
+  executable page, so the cache is 8 times the size of the code, not of guest
+  memory. It is allocated zeroed when code first runs and freed by
+  `memory_destroy`; untouched slots stay as unbacked zero pages.
+- **Speed.** `tests/asm/bench.S` under `nbrun` runs about 2.4 times faster:
+  from 154 to 373 million instructions per second with compressed
+  instructions, and from 161 to 381 million without.
 
 ## Capabilities
 
@@ -210,6 +235,55 @@ Why each piece exists (all found while setting this up):
 Any language that compiles to RV64GC can target the same ABI. `tests/asm`
 contains pages written directly in assembly.
 
+## Debugging
+
+`nbrun --gdb PORT page.elf` lets GDB debug a page. nbrun listens on
+127.0.0.1 only, takes one client, and runs nothing until GDB connects.
+
+```log
+$ nbrun --gdb 1234 build/tests/gdb.nc.elf &
+$ gdb build/tests/gdb.nc.elf
+(gdb) target remote :1234
+0x0000000000010000 in _start ()
+(gdb) break *target
+Breakpoint 1 at 0x10020
+(gdb) continue
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0000000000010018 in _start ()
+(gdb) continue
+Breakpoint 1, 0x0000000000010020 in target ()
+(gdb) x/2i $pc
+=> 0x10020 <target>:	addi	a0,a0,4
+   0x10024 <target+4>:	ld	a4,0(a3)
+(gdb) stepi
+0x0000000000010024 in target ()
+(gdb) continue
+[Inferior 1 (Remote target) exited with code 07]
+```
+
+- **The stub** is `src/gdbstub`. It does no I/O: nbrun passes it the bytes
+  from the socket and sends what it returns, so its tests need no network.
+  It tells GDB the target is riscv:rv64, with the integer registers, pc, f0
+  to f31, fflags, frm and fcsr.
+- **Breakpoints do not write to code.** Code pages are never writable, and
+  the VM may rely on that. The stub keeps breakpoints in its own table.
+  While any are set, it runs the page one instruction at a time and checks
+  pc before each one, which makes the page about half again slower. With no
+  breakpoints it runs slices of 100,000 instructions and checks for Ctrl-C
+  between them.
+- **`ebreak`** stops the page when a debugger is attached (`Page.debugger`;
+  the page goes to `Page_State.Break`). pc stays on the `ebreak` and GDB
+  reports SIGTRAP. Continuing or stepping goes past it. Without a debugger,
+  an `ebreak` still kills the page.
+- **Memory writes** from GDB go through the page's permissions. Writing to
+  code or to unmapped memory fails with "Cannot access memory".
+- **Stops.** A fault is SIGSEGV, or SIGILL for an illegal instruction. GDB
+  cannot continue past it: continuing ends the page. Syscalls and waits
+  work as they do without GDB. Exiting, the instruction budget and waiting
+  forever end the session.
+- **Detaching** (`detach`) lets the page run on without the debugger.
+  Quitting GDB kills it.
+
 ## Roadmap
 
 1. **VM and headless runner** (done). The interpreter, loader, syscalls, SDK,
@@ -261,6 +335,33 @@ contains pages written directly in assembly.
        direction.
    - **Per-site storage** with quotas from the manifest, keyed by the
      server's verified key.
+   - **History and bookmarks.** Every page that loads is recorded with its
+     address, a title (the manifest's `title`, else the page's first
+     heading) and the time. A page visited again moves to the top and keeps
+     its title unless it has a new one; the 1000 most recent are kept.
+     - Ctrl+D or the star after the address bar bookmarks the page, or
+       removes its bookmark. The star is filled while the page is
+       bookmarked.
+     - Ctrl+H shows the history and Ctrl+Shift+O the bookmarks, newest
+       first, in a panel over the page. Typing filters by title or address.
+       Up and Down choose, Enter or a click opens the entry, and Ctrl+Enter,
+       Ctrl+click or a middle click opens it in a new tab. Shift+Delete or
+       the × removes it, and Esc closes the panel. The rows keep their
+       order while the panel is open, so opening entries in new tabs does
+       not move them.
+     - Both lists live in the profile, in `history` and `bookmarks`: one
+       `time<TAB>address<TAB>title` line per entry. Each change writes a
+       temporary file (named after the process) and renames it over the old
+       one, and a damaged line is skipped when the file is read.
+     - One browser at a time writes a profile: it holds an `flock` on the
+       profile's `lock` file. A second browser on the same profile reads
+       the lists but does not save them, and says so in the status bar.
+       Otherwise the last one to save would drop the other's visits. A file
+       that exists but cannot be read is not saved over either. The lock is
+       only taken on Linux so far.
+     - `src/places` keeps the lists. It has no graphics, so it is unit
+       tested. Only the browser reads them: no syscall gives a page its
+       history or bookmarks.
 5. **Pages fetch data** (done). `Fetch_Open` and `Fetch_Read` reach only the
    servers named in the manifest's `fetch` lines. `fetch /` means the page's
    own server, held to the key the page was loaded from.
@@ -279,8 +380,8 @@ contains pages written directly in assembly.
    - **Connection reuse.** `nb` keeps a `proto.Pool` of idle, authenticated
      connections, shared by page loads and fetches. A connection is reused
      only for the same address and key.
-6. **Images** (done). `Image_Set_Data` hands the browser a PNG or baseline
-   JPEG that the page embedded or fetched.
+6. **Images** (done). `Image_Set_Data` hands the browser a PNG or JPEG
+   that the page embedded or fetched.
    - **Decoding.** `host` decodes it with Odin's `core:image`, which is pure
      Odin and bounds-checked. It reads the header first, so an oversized
      picture is refused before its pixels are allocated, and it keeps RGBA8
@@ -309,10 +410,7 @@ contains pages written directly in assembly.
 
 Later ideas:
 
-- a history and bookmarks view
 - an accessibility bridge: the semantic tree maps directly onto platform accessibility APIs
-- a pre-decoded instruction cache (W^X makes it safe)
-- a GDB remote stub hooked to `ebreak`
 - record and replay
 - hybrid post-quantum handshakes with ML-KEM
 - sending data, not just reading it: a request body, for servers that do more than serve files

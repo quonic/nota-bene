@@ -23,7 +23,16 @@ reload_rect :: proc() -> layout.Rect { return {70, BUTTON_Y, 66, BUTTON_H} }
 @(private="file")
 address_rect :: proc(b: ^Browser) -> layout.Rect {
 	vw, _ := viewport_size(b)
-	return {144, BUTTON_Y, max(vw - 152, 40), BUTTON_H}
+	return {144, BUTTON_Y, max(vw - 152 - BOOKMARK_W - 6, 40), BUTTON_H}
+}
+
+// The star after the address bar: filled when the page is bookmarked.
+@(private="file") BOOKMARK_W :: 32
+
+@(private="file")
+bookmark_rect :: proc(b: ^Browser) -> layout.Rect {
+	a := address_rect(b)
+	return {a.x + a.w + 6, BUTTON_Y, BOOKMARK_W, BUTTON_H}
 }
 
 // The part of the address bar that holds text.
@@ -37,6 +46,7 @@ ADDRESS_FONT :: layout.Font{size = 14}
 KEY_BACK    :: KEY_STATUS_LEFT + 10
 KEY_RELOAD  :: KEY_STATUS_LEFT + 11
 KEY_ADDRESS :: KEY_STATUS_LEFT + 12
+KEY_STAR    :: KEY_STATUS_LEFT + 13
 
 // The location the address bar shows when nobody is editing it.
 current_location :: proc(b: ^Browser) -> string {
@@ -53,6 +63,7 @@ set_address_focus :: proc(b: ^Browser, focus: bool) {
 	b.address_focus = focus
 	if focus {
 		b.find_focus = false
+		close_panel(b)
 		field.set_text(&b.address, current_location(b))
 		field.select_all(&b.address) // typing replaces the location
 	}
@@ -92,6 +103,9 @@ toolbar_click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, clicks: int) 
 	case layout.rect_contains(reload_rect(), x, y):
 		set_address_focus(b, false)
 		reload(b)
+	case layout.rect_contains(bookmark_rect(b), x, y):
+		set_address_focus(b, false)
+		toggle_bookmark(b)
 	case layout.rect_contains(address_rect(b), x, y):
 		if b.address_focus {
 			field_press(b, .Address, x, y, mods, clicks)
@@ -107,7 +121,8 @@ toolbar_cursor :: proc(b: ^Browser, x, y: f32) -> sdl.SystemCursor {
 	switch {
 	case layout.rect_contains(address_rect(b), x, y):
 		return .TEXT
-	case layout.rect_contains(back_rect(), x, y) && len(b.history) > 1, layout.rect_contains(reload_rect(), x, y):
+	case layout.rect_contains(back_rect(), x, y) && len(b.history) > 1, layout.rect_contains(reload_rect(), x, y),
+	     layout.rect_contains(bookmark_rect(b), x, y) && b.page_path != "":
 		return .POINTER
 	}
 	return .DEFAULT
@@ -126,6 +141,16 @@ draw_toolbar :: proc(b: ^Browser, vw: f32) {
 	}
 	draw_button(b, KEY_BACK, back_rect(), "Back", len(b.history) > 1)
 	draw_button(b, KEY_RELOAD, reload_rect(), "Reload", b.page_path != "")
+
+	star := bookmark_rect(b)
+	marked := is_bookmarked(b)
+	fill_rect(b, star, b.theme.button if b.page_path != "" else {0xF2, 0xF3, 0xF5, 0xFF})
+	stroke_rect(b, star, b.theme.button_edge)
+	glyph := "★" if marked else "☆"
+	star_font := layout.Font{size = 18}
+	gw, gh := measure_text(&b.fonts, glyph, star_font, 0)
+	star_color := layout.Color{0xD9, 0x8C, 0x00, 0xFF} if marked else layout.Color{0x8A, 0x90, 0x99, 0xFF}
+	draw_text(b, KEY_STAR, glyph, star_font, 0, star_color, star.x + (star.w - gw) / 2, star.y + (star.h - gh) / 2)
 
 	r := address_rect(b)
 	_, th := measure_text(&b.fonts, "", ADDRESS_FONT, 0)

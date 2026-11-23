@@ -57,7 +57,7 @@ REG_A7 :: 17
 // including a final ecall.
 run :: proc(cpu: ^Cpu, budget: u64) -> (reason: Stop_Reason, executed: u64) {
 	for executed < budget {
-		r, stopped := step(cpu)
+		r, stopped := step_inline(cpu)
 		if r != .Fault {
 			executed += 1
 		}
@@ -72,23 +72,169 @@ run :: proc(cpu: ^Cpu, budget: u64) -> (reason: Stop_Reason, executed: u64) {
 
 // Executes one instruction. `stopped` is false when execution can simply continue.
 step :: proc(cpu: ^Cpu) -> (reason: Stop_Reason, stopped: bool) {
+	return step_inline(cpu)
+}
+
+@(private)
+step_inline :: #force_inline proc(cpu: ^Cpu) -> (Stop_Reason, bool) {
+	if d := cache_lookup(&cpu.mem.code, cpu.pc); d != nil {
+		return exec_decoded(cpu, d)
+	}
+	return step_uncached(cpu)
+}
+
+// Fetches and decodes the instruction at pc, caches it, and executes it.
+@(private)
+step_uncached :: proc(cpu: ^Cpu) -> (Stop_Reason, bool) {
 	pc := cpu.pc
 	lo, ok := fetch16(&cpu.mem, pc)
 	if !ok {
 		return set_fault(cpu, .Fetch_Access, 0, pc), true
 	}
+	inst: u32
+	size: u64
 	if lo & 3 != 3 {
-		inst, valid := expand_compressed(lo)
+		valid: bool
+		inst, valid = expand_compressed(lo)
 		if !valid {
 			return set_fault(cpu, .Illegal_Instruction, u32(lo)), true
 		}
-		return execute(cpu, inst, 2)
+		size = 2
+	} else {
+		hi, ok2 := fetch16(&cpu.mem, pc + 2)
+		if !ok2 {
+			return set_fault(cpu, .Fetch_Access, u32(lo), pc + 2), true
+		}
+		inst, size = u32(lo) | u32(hi) << 16, 4
 	}
-	hi, ok2 := fetch16(&cpu.mem, pc + 2)
-	if !ok2 {
-		return set_fault(cpu, .Fetch_Access, u32(lo), pc + 2), true
+	d := decode(inst, size)
+	if slot := cache_slot(&cpu.mem, pc); slot != nil {
+		slot^ = d
 	}
-	return execute(cpu, u32(lo) | u32(hi) << 16, 4)
+	return exec_decoded(cpu, &d)
+}
+
+// Executes a decoded instruction. Mirrors `execute` exactly; see decode.
+@(private)
+exec_decoded :: #force_inline proc(cpu: ^Cpu, d: ^Decoded) -> (Stop_Reason, bool) #no_bounds_check {
+	x := &cpu.x
+	a := x[d.rs1]
+	b := x[d.rs2]
+	imm := u64(i64(d.imm))
+	pc := cpu.pc
+	next := pc + u64(d.size)
+	rd := d.rd
+
+	switch d.op {
+	case .None, .Legacy:
+		return execute(cpu, d.inst, u64(d.size))
+
+	case .Lui:   x[rd] = imm
+	case .Auipc: x[rd] = pc + imm
+	case .Jal:
+		x[rd] = next
+		next = pc + imm
+	case .Jalr:
+		x[rd] = next
+		next = (a + imm) &~ 1
+
+	case .Beq:  if a == b { next = pc + imm }
+	case .Bne:  if a != b { next = pc + imm }
+	case .Blt:  if i64(a) < i64(b) { next = pc + imm }
+	case .Bge:  if i64(a) >= i64(b) { next = pc + imm }
+	case .Bltu: if a < b { next = pc + imm }
+	case .Bgeu: if a >= b { next = pc + imm }
+
+	case .Lb, .Lh, .Lw, .Ld, .Lbu, .Lhu, .Lwu:
+		addr := a + imm
+		v: u64
+		ok: bool
+		#partial switch d.op {
+		case .Lb:  v, ok = load(&cpu.mem, addr, 1); v = u64(i64(i8(u8(v))))
+		case .Lh:  v, ok = load(&cpu.mem, addr, 2); v = u64(i64(i16(u16(v))))
+		case .Lw:  v, ok = load(&cpu.mem, addr, 4); v = sext32(v)
+		case .Ld:  v, ok = load(&cpu.mem, addr, 8)
+		case .Lbu: v, ok = load(&cpu.mem, addr, 1)
+		case .Lhu: v, ok = load(&cpu.mem, addr, 2)
+		case .Lwu: v, ok = load(&cpu.mem, addr, 4)
+		}
+		if !ok {
+			return set_fault(cpu, .Load_Access, d.inst, addr), true
+		}
+		x[rd] = v
+
+	case .Sb, .Sh, .Sw, .Sd:
+		addr := a + imm
+		ok: bool
+		#partial switch d.op {
+		case .Sb: ok = store(&cpu.mem, addr, b, 1)
+		case .Sh: ok = store(&cpu.mem, addr, b, 2)
+		case .Sw: ok = store(&cpu.mem, addr, b, 4)
+		case .Sd: ok = store(&cpu.mem, addr, b, 8)
+		}
+		if !ok {
+			return set_fault(cpu, .Store_Access, d.inst, addr), true
+		}
+
+	case .Addi:  x[rd] = a + imm
+	case .Slti:  x[rd] = 1 if i64(a) < i64(imm) else 0
+	case .Sltiu: x[rd] = 1 if a < imm else 0
+	case .Xori:  x[rd] = a ~ imm
+	case .Ori:   x[rd] = a | imm
+	case .Andi:  x[rd] = a & imm
+	case .Slli:  x[rd] = a << imm
+	case .Srli:  x[rd] = a >> imm
+	case .Srai:  x[rd] = u64(i64(a) >> imm)
+
+	case .Add:  x[rd] = a + b
+	case .Sub:  x[rd] = a - b
+	case .Sll:  x[rd] = a << (b & 63)
+	case .Slt:  x[rd] = 1 if i64(a) < i64(b) else 0
+	case .Sltu: x[rd] = 1 if a < b else 0
+	case .Xor:  x[rd] = a ~ b
+	case .Srl:  x[rd] = a >> (b & 63)
+	case .Sra:  x[rd] = u64(i64(a) >> (b & 63))
+	case .Or:   x[rd] = a | b
+	case .And:  x[rd] = a & b
+
+	case .Mul:    x[rd] = a * b
+	case .Mulh:   x[rd] = u64((i128(i64(a)) * i128(i64(b))) >> 64)
+	case .Mulhsu: x[rd] = u64((i128(i64(a)) * i128(b)) >> 64)
+	case .Mulhu:  x[rd] = u64((u128(a) * u128(b)) >> 64)
+	case .Div:    x[rd] = u64(div_signed(i64(a), i64(b)))
+	case .Divu:   x[rd] = b == 0 ? max(u64) : a / b
+	case .Rem:    x[rd] = u64(rem_signed(i64(a), i64(b)))
+	case .Remu:   x[rd] = b == 0 ? a : a % b
+
+	case .Addiw: x[rd] = sext32(a + imm)
+	case .Slliw: x[rd] = sext32(u64(u32(a) << imm))
+	case .Srliw: x[rd] = sext32(u64(u32(a) >> imm))
+	case .Sraiw: x[rd] = u64(i64(i32(u32(a)) >> imm))
+
+	case .Addw: x[rd] = sext32(u64(u32(a) + u32(b)))
+	case .Subw: x[rd] = sext32(u64(u32(a) - u32(b)))
+	case .Sllw: x[rd] = sext32(u64(u32(a) << (b & 31)))
+	case .Srlw: x[rd] = sext32(u64(u32(a) >> (b & 31)))
+	case .Sraw: x[rd] = u64(i64(i32(u32(a)) >> (b & 31)))
+
+	case .Mulw:  x[rd] = sext32(u64(u32(a) * u32(b)))
+	case .Divw:  x[rd] = u64(i64(div_signed32(i32(u32(a)), i32(u32(b)))))
+	case .Divuw: x[rd] = sext32(u64(u32(b) == 0 ? max(u32) : u32(a) / u32(b)))
+	case .Remw:  x[rd] = u64(i64(rem_signed32(i32(u32(a)), i32(u32(b)))))
+	case .Remuw: x[rd] = sext32(u64(u32(b) == 0 ? u32(a) : u32(a) % u32(b)))
+
+	case .Fence:
+
+	case .Ecall:
+		cpu.pc = next
+		return .Ecall, true
+	case .Ebreak:
+		return .Ebreak, true
+	}
+
+	x[0] = 0 // writes to x0 above are discarded here rather than tested for
+	cpu.pc = next
+	return .Budget, false
 }
 
 @(private)

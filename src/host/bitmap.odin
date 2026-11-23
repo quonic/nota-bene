@@ -8,7 +8,7 @@ import "core:image"
 import "../abi"
 
 // Decoded pixels for an Image node: RGBA8, row-major, straight alpha.
-// Pages hand over an encoded PNG or baseline JPEG with Image_Set_Data; the
+// Pages hand over an encoded PNG or JPEG with Image_Set_Data; the
 // host decodes it once, and the browser draws these pixels.
 Bitmap :: struct {
 	width:   int,
@@ -57,7 +57,7 @@ bitmap_free :: proc(p: ^Page, n: ^Node) {
 	n.bitmap = {}
 }
 
-// Decodes a PNG or baseline JPEG into RGBA8. The size is read from the
+// Decodes a PNG or JPEG into RGBA8. The size is read from the
 // header first, so an oversized image is refused before anything is
 // allocated for its pixels.
 @(private)
@@ -92,7 +92,7 @@ bitmap_decode :: proc(data: []u8, allocator := context.allocator) -> (bm: Bitmap
 	if img.channels < 1 || img.channels > 4 || (img.depth != 8 && img.depth != 16) {
 		return {}, .INVAL
 	}
-	src := img.pixels.buf[:]
+	src := img.pixels[:]
 	count := img.width * img.height
 	if len(src) < count * img.channels * bytes_per {
 		return {}, .INVAL

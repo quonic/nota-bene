@@ -29,6 +29,7 @@ Field_Target :: enum {
 	None,
 	Address,
 	Find,
+	Panel, // the history or bookmarks filter
 	Input,
 }
 
@@ -39,6 +40,8 @@ focused_field :: proc(b: ^Browser) -> Field_Target {
 		return .Address
 	case b.find_focus:
 		return .Find
+	case b.panel != .None:
+		return .Panel
 	case b.focus != abi.INVALID_HANDLE && sync_input(b):
 		return .Input
 	}
@@ -56,6 +59,8 @@ field_geometry :: proc(b: ^Browser, t: Field_Target) -> (f: ^Text_Field, key: u6
 	case .Find:
 		_, vh := viewport_size(b)
 		return &b.find, KEY_FIND_TEXT, FIND_FONT, find_field_inner(b, CHROME_HEIGHT + vh).x, true
+	case .Panel:
+		return &b.panel_filter, KEY_PANEL_FILTER, PANEL_FONT, panel_filter_inner(b).x, true
 	case .Input:
 		i := item_index_of(b, b.focus)
 		if i < 0 {
@@ -203,6 +208,8 @@ field_layout_of :: proc(b: ^Browser, t: Field_Target) -> (fl: ^Field_Layout, ok:
 	case .Find:
 		_, vh := viewport_size(b)
 		width = find_field_inner(b, CHROME_HEIGHT + vh).w
+	case .Panel:
+		width = panel_filter_inner(b).w
 	case .Input:
 		item := &b.lay.items[item_index_of(b, b.focus)]
 		width = item.rect.w - 2 * item.style.padding

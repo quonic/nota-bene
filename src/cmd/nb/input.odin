@@ -66,7 +66,7 @@ set_focus :: proc(b: ^Browser, h: abi.Handle) {
 // Text input (and the on-screen keyboard, where there is one) is on while
 // the address bar or a page Input has focus.
 update_text_input :: proc(b: ^Browser) {
-	if b.address_focus || b.find_focus || b.focus != abi.INVALID_HANDLE {
+	if b.address_focus || b.find_focus || b.panel != .None || b.focus != abi.INVALID_HANDLE {
 		_ = sdl.StartTextInput(b.window)
 	} else {
 		_ = sdl.StopTextInput(b.window)
@@ -104,6 +104,12 @@ push_event :: proc(b: ^Browser, ev: abi.Event) {
 // A click at logical window coordinates. Ctrl+click and middle click open
 // links in a new background tab.
 click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, middle := false, clicks := 1) {
+	if b.swallow_clicks {
+		if clicks > 1 {
+			return // the rest of a double click that opened a row or closed the panel
+		}
+		b.swallow_clicks = false
+	}
 	if y < TABBAR_HEIGHT {
 		tabbar_click(b, x, y, middle)
 		return
@@ -113,6 +119,10 @@ click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, middle := false, clic
 		return
 	}
 	set_address_focus(b, false)
+	if b.panel != .None {
+		panel_click(b, x, y, mods, middle, clicks)
+		return
+	}
 	if find_bar_contains(b, x, y) {
 		_, vh := viewport_size(b)
 		if layout.rect_contains(find_field_inner(b, CHROME_HEIGHT + vh), x, y) || b.find_focus {
@@ -176,7 +186,9 @@ hover :: proc(b: ^Browser, x, y: f32) {
 	} else if y < TABBAR_HEIGHT {
 		cursor = tabbar_cursor(b, x, y)
 	}
-	if _, dy, inside := to_document(b, x, y); b.lay_valid && inside {
+	if panel_contains(b, x, y) {
+		cursor = panel_cursor(b, x, y)
+	} else if _, dy, inside := to_document(b, x, y); b.panel == .None && b.lay_valid && inside {
 		if hit := layout.hit_test(&b.lay, x, dy); hit >= 0 {
 			if link := layout.find_ancestor(&b.lay, hit, {.Link}); link >= 0 {
 				href = b.lay.items[link].href
@@ -244,6 +256,12 @@ browser_shortcut :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers) -> 
 		}
 	case ctrl && key == 'f':
 		open_find(b)
+	case ctrl && key == 'h':
+		toggle_panel(b, .History)
+	case ctrl && .Shift in mods && (key == 'o' || key == 'O'):
+		toggle_panel(b, .Bookmarks)
+	case ctrl && key == 'd':
+		toggle_bookmark(b)
 	case key == sdl.K_F7:
 		b.caret_browsing = !b.caret_browsing
 		ensure_caret(b)
@@ -273,6 +291,14 @@ browser_shortcut :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers) -> 
 
 handle_key :: proc(b: ^Browser, e: sdl.KeyboardEvent) {
 	mods := modifiers(e.mod)
+	if !e.down && b.swallow_key_up != 0 && e.key == b.swallow_key_up {
+		b.swallow_key_up = 0
+		return // the page never saw this key go down
+	}
+	panel_was_open := b.panel != .None
+	defer if e.down && panel_was_open && b.panel == .None {
+		b.swallow_key_up = e.key
+	}
 	if e.down && browser_shortcut(b, e.key, mods) {
 		return
 	}
@@ -290,6 +316,15 @@ handle_key :: proc(b: ^Browser, e: sdl.KeyboardEvent) {
 				refresh_matches(b)
 			} else if !handled {
 				find_key(b, e.key, mods)
+			}
+		}
+		return
+	}
+	if b.panel != .None {
+		// The panel takes every key while it is open; the page sees none.
+		if e.down && !panel_key(b, e.key, mods) {
+			if _, changed := field_key(b, &b.panel_filter, e.key, mods); changed {
+				refresh_panel(b)
 			}
 		}
 		return
@@ -366,6 +401,10 @@ handle_text :: proc(b: ^Browser, text: string, typing := true) {
 	case .Find:
 		field.insert(&b.find, text, typing)
 		refresh_matches(b)
+		return
+	case .Panel:
+		field.insert(&b.panel_filter, text, typing)
+		refresh_panel(b)
 		return
 	case .Input:
 		b.input.max_len = abi.MAX_TEXT_LEN

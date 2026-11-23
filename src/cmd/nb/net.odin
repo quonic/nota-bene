@@ -14,11 +14,7 @@ Fetch_Job :: struct {
 	location:     string, // owned; `url` points into it
 	url:          proto.URL,
 	pinned:       Maybe(proto.Key),
-	pinned_from:  enum {
-		None,
-		URL,
-		Known_Hosts,
-	},
+	pinned_from:  proto.Key_Source,
 	have:         []u8,
 	pool:         ^proto.Pool, // a reference held for the thread
 	push_history: bool,
@@ -71,11 +67,8 @@ start_fetch :: proc(b: ^Browser, location: string, push_history: bool) {
 	job.url = u
 	job.push_history = push_history
 	host := proto.host_port(u, context.temp_allocator)
-	if u.has_key {
-		job.pinned, job.pinned_from = u.key, .URL
-	} else if k, found := proto.known_hosts_get(&b.known_hosts, host); found {
-		job.pinned, job.pinned_from = k, .Known_Hosts
-	}
+	// Without a pinned key the fetch thread asks DNS (through the pool).
+	job.pinned, job.pinned_from = proto.pinned_key(u, &b.known_hosts)
 	if c, found := b.cache[cache_key(u)]; found {
 		job.have = c.hash
 	}
@@ -114,6 +107,8 @@ poll_fetch :: proc(b: ^Browser) {
 	if r.err != nil {
 		begin_page(b, job.location, job.push_history)
 		switch {
+		case r.dns == .Keys && (r.err == .Handshake || r.err == .Key_Mismatch):
+			set_error(b, "%s did not prove it holds a key published for it in DNS (%s), so the page was not loaded. The record may be out of date, or someone may be intercepting the connection. The browser keeps the record for 10 minutes, so a record that was just fixed takes effect after that or after a restart.", server, proto.dns_record_name(u.host, u.port, context.temp_allocator))
 		case r.err == .Handshake && job.pinned_from == .Known_Hosts:
 			set_error(b, "%s did not prove it holds the key pinned for it on your first visit. The server's key may have changed, or someone may be intercepting the connection. If the change is expected, remove the %s line from %s.", server, server, b.known_hosts.path)
 		case r.err == .Handshake && job.pinned_from == .URL:
@@ -126,14 +121,29 @@ poll_fetch :: proc(b: ^Browser) {
 		return
 	}
 
-	// Trust on first use: remember the key the server proved it holds.
+	// Trust on first use: remember the key the server proved it holds. The
+	// pin is read again here, as another load may have made one meanwhile.
 	if job.pinned_from != .Known_Hosts {
-		proto.known_hosts_set(&b.known_hosts, server, r.server_key)
-		if !proto.known_hosts_save(&b.known_hosts) {
-			fmt.eprintfln("nb: cannot save %s", b.known_hosts.path)
-		}
-		if job.pinned_from == .None {
-			set_message(b, "first visit to %s: pinned its key %s", server, proto.key_fingerprint(r.server_key, context.temp_allocator))
+		fingerprint := proto.key_fingerprint(r.server_key, context.temp_allocator)
+		old, pinned := proto.known_hosts_get(&b.known_hosts, server)
+		switch {
+		case pinned && old != r.server_key && job.pinned_from == .None:
+			begin_page(b, job.location, job.push_history)
+			set_error(b, "%s proved it holds a key other than the one pinned for it while this page loaded. The server's key may have changed, or someone may be intercepting the connection. If the change is expected, remove the %s line from %s.", server, server, b.known_hosts.path)
+			return
+		case pinned:
+			// The same key, or the address named its own: an existing pin
+			// is never replaced.
+		case r.dns == .Failed:
+			set_message(b, "could not look up %s's key in DNS: loaded it without pinning its key %s", server, fingerprint)
+		case:
+			pin_key(b, server, r.server_key)
+			switch {
+			case job.pinned_from == .None && r.dns == .Keys:
+				set_message(b, "first visit to %s: its key %s matches its DNS record; pinned it", server, fingerprint)
+			case job.pinned_from == .None:
+				set_message(b, "first visit to %s: pinned its key %s", server, fingerprint)
+			}
 		}
 	}
 
@@ -201,11 +211,9 @@ page_fetch :: proc(p: ^host.Page, id: u64, url: string) {
 	job.location = strings.clone(url)
 	job.url, _ = proto.parse_url(job.location) // the host only hands out valid URLs
 	job.tab, job.serial, job.id = t, t.serial, id
-	if job.url.has_key {
-		job.pinned = job.url.key
-	} else if k, found := proto.known_hosts_get(&b.known_hosts, proto.host_port(job.url, context.temp_allocator)); found {
-		job.pinned, job.from_known = k, true
-	}
+	source: proto.Key_Source
+	job.pinned, source = proto.pinned_key(job.url, &b.known_hosts)
+	job.from_known = source == .Known_Hosts
 	job.pool = b.pool
 	proto.pool_retain(job.pool)
 	append(&b.fetches, job)
@@ -236,14 +244,24 @@ poll_data_fetches :: proc(b: ^Browser) {
 }
 
 @(private)
+pin_key :: proc(b: ^Browser, server: string, key: proto.Key) {
+	proto.known_hosts_set(&b.known_hosts, server, key)
+	if !proto.known_hosts_save(&b.known_hosts) {
+		fmt.eprintfln("nb: cannot save %s", b.known_hosts.path)
+	}
+}
+
+@(private)
 finish_data_fetch :: proc(b: ^Browser, job: ^Data_Fetch) {
 	r := &job.result
 	server := proto.host_port(job.url, context.temp_allocator)
+	conflict := false // a different key was pinned while the request ran
 	if r.err == nil && job.pinned == nil {
-		// Trust on first use, as for pages.
-		proto.known_hosts_set(&b.known_hosts, server, r.server_key)
-		if !proto.known_hosts_save(&b.known_hosts) {
-			fmt.eprintfln("nb: cannot save %s", b.known_hosts.path)
+		// Trust on first use, as for pages, unless DNS could not be asked.
+		if old, pinned := proto.known_hosts_get(&b.known_hosts, server); pinned {
+			conflict = old != r.server_key
+		} else if r.dns != .Failed {
+			pin_key(b, server, r.server_key)
 		}
 	}
 	for t in b.tabs {
@@ -254,13 +272,18 @@ finish_data_fetch :: proc(b: ^Browser, job: ^Data_Fetch) {
 		b.cur = t
 		defer b.cur = prev
 		switch {
-		case r.err == nil:
+		case r.err == nil && !conflict:
 			host.page_fetch_complete(&t.page, job.id, i64(r.status), r.body)
 		case r.err == .Too_Large:
 			host.page_fetch_complete(&t.page, job.id, -i64(abi.Errno.RANGE), nil)
 		case:
 			host.page_fetch_complete(&t.page, job.id, -i64(abi.Errno.NET), nil)
-			if r.err == .Handshake && job.pinned != nil {
+			switch {
+			case conflict:
+				set_message(b, "%s proved a key other than the one pinned for it; the page's request failed", server)
+			case r.dns == .Keys && (r.err == .Handshake || r.err == .Key_Mismatch):
+				set_message(b, "%s did not prove it holds a key published for it in DNS; the page's request failed", server)
+			case r.err == .Handshake && job.pinned != nil:
 				set_message(b, "%s did not prove it holds the key %s; the page's request failed", server, "pinned for it" if job.from_known else "the page expects")
 			}
 		}

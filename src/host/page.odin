@@ -21,6 +21,7 @@ Page_State :: enum {
 	Exited,  // called Exit; see exit_code
 	Faulted, // the VM faulted; see cpu.fault
 	Killed,  // stopped by the host; see kill_reason
+	Break,   // hit an ebreak with `debugger` set; pc is at the ebreak
 }
 
 Log_Proc :: #type proc(p: ^Page, level: abi.Log_Level, msg: string)
@@ -64,6 +65,11 @@ Page :: struct {
 	fetches:       map[u64]abi.Handle,    // requests in flight; INVALID_HANDLE once the page closed the stream
 	next_fetch_id: u64,
 	assets:        map[string][]u8,       // files from the page's bundle; see page_set_assets
+
+	// Set by a front end with a debugger attached: an ebreak then stops the
+	// page in .Break instead of killing it. The debugger resumes it by moving
+	// pc past the ebreak (or elsewhere) and setting state back to .Running.
+	debugger:    bool,
 
 	log_proc:    Log_Proc,
 	trace_proc:  Trace_Proc, // called after each syscall when set
@@ -120,7 +126,7 @@ page_now :: proc(p: ^Page) -> i64 {
 }
 
 // Executes up to `budget` instructions, handling syscalls along the way.
-// Returns early when the page waits, exits or faults.
+// Returns early when the page waits, exits, faults or stops at an ebreak.
 page_run :: proc(p: ^Page, budget: u64) -> Page_State {
 	if p.state != .Running {
 		return p.state
@@ -134,7 +140,11 @@ page_run :: proc(p: ^Page, budget: u64) -> Page_State {
 		case .Ecall:
 			dispatch(p)
 		case .Ebreak:
-			page_kill(p, "ebreak with no debugger attached")
+			if p.debugger {
+				p.state = .Break
+			} else {
+				page_kill(p, "ebreak with no debugger attached")
+			}
 		case .Fault:
 			p.state = .Faulted
 		}

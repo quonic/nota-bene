@@ -337,8 +337,8 @@ Breakpoint 1, 0x0000000000010020 in target ()
      server's verified key.
    - **History and bookmarks.** Every page that loads is recorded with its
      address, a title (the manifest's `title`, else the page's first
-     heading) and the time. A page visited again moves to the top; the 1000
-     most recent are kept.
+     heading) and the time. A page visited again moves to the top and keeps
+     its title unless it has a new one; the 1000 most recent are kept.
      - Ctrl+D or the star after the address bar bookmarks the page, or
        removes its bookmark. The star is filled while the page is
        bookmarked.
@@ -346,11 +346,19 @@ Breakpoint 1, 0x0000000000010020 in target ()
        first, in a panel over the page. Typing filters by title or address.
        Up and Down choose, Enter or a click opens the entry, and Ctrl+Enter,
        Ctrl+click or a middle click opens it in a new tab. Shift+Delete or
-       the × removes it, and Esc closes the panel.
+       the × removes it, and Esc closes the panel. The rows keep their
+       order while the panel is open, so opening entries in new tabs does
+       not move them.
      - Both lists live in the profile, in `history` and `bookmarks`: one
        `time<TAB>address<TAB>title` line per entry. Each change writes a
-       temporary file and renames it over the old one, and a damaged line is
-       skipped when the file is read.
+       temporary file (named after the process) and renames it over the old
+       one, and a damaged line is skipped when the file is read.
+     - One browser at a time writes a profile: it holds an `flock` on the
+       profile's `lock` file. A second browser on the same profile reads
+       the lists but does not save them, and says so in the status bar.
+       Otherwise the last one to save would drop the other's visits. A file
+       that exists but cannot be read is not saved over either. The lock is
+       only taken on Linux so far.
      - `src/places` keeps the lists. It has no graphics, so it is unit
        tested. Only the browser reads them: no syscall gives a page its
        history or bookmarks.

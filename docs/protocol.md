@@ -220,6 +220,7 @@ and back send its hash as `have`, so an unchanged page costs only a 304.
 | `~/.config/new-browser/storage/` | per-site storage (see [syscalls.md](syscalls.md#storage-0x400)) |
 | `~/.config/new-browser/history` | pages the user loaded, one `time<TAB>address<TAB>title` line each (Unix seconds), oldest first. At most 1000. |
 | `~/.config/new-browser/bookmarks` | bookmarks, in the same form as `history` |
+| `~/.config/new-browser/lock` | empty; the browser that holds an `flock` on it is the one that saves `history` and `bookmarks` |
 
 ## Not yet implemented
 

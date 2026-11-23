@@ -81,7 +81,9 @@ Event :: struct {      // offset
 The browser keeps a few keys for itself and does not pass them to the page:
 Ctrl+L / F6 (address bar), F5 / Ctrl+R (reload), Alt+Left (back), F12
 (dump the tree), the tab keys (Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+1…9), find
-(Ctrl+F, F3), and Ctrl+A / Ctrl+C / Ctrl+X / Ctrl+V. Ctrl+A and Ctrl+C on
+(Ctrl+F, F3), history and bookmarks (Ctrl+H, Ctrl+Shift+O, Ctrl+D), and
+Ctrl+A / Ctrl+C / Ctrl+X / Ctrl+V. While the history or bookmarks panel is
+open, the page gets no keys and no clicks at all. Ctrl+A and Ctrl+C on
 page text select and copy it, and the browser does that itself; so do Shift
 with the arrows, Home and End while there is a selection on the page, though
 the page still gets those `Key` events. In a focused Input, the browser also

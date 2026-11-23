@@ -48,19 +48,35 @@ KEY_PANEL_BASE   :: u64(1) << 43 // + 8*row slot + part; the panel's own labels 
 @(private = "file") SEPARATOR  :: layout.Color{0xEE, 0xEF, 0xF2, 0xFF}
 @(private = "file") HEADER_BG  :: layout.Color{0xF8, 0xF9, 0xFA, 0xFF}
 
+// Loads both lists. A second browser on the same profile does not get the
+// lock and keeps its lists read-only, so neither drops the other's visits.
 places_init :: proc(b: ^Browser) {
 	path := proc(b: ^Browser, name: string) -> string {
 		p, _ := filepath.join({b.profile, name}, context.temp_allocator)
 		return p
 	}
-	places.load(&b.visited, path(b, "history"), places.HISTORY_LIMIT)
-	places.load(&b.bookmarks, path(b, "bookmarks"), places.BOOKMARK_LIMIT)
+	locked: bool
+	b.places_lock, locked = places.lock_profile(b.profile)
+	if !places.load(&b.visited, path(b, "history"), places.HISTORY_LIMIT) {
+		fmt.eprintfln("nb: cannot read %s; it will not be changed", b.visited.path)
+	}
+	if !places.load(&b.bookmarks, path(b, "bookmarks"), places.BOOKMARK_LIMIT) {
+		fmt.eprintfln("nb: cannot read %s; it will not be changed", b.bookmarks.path)
+	}
+	if !locked {
+		b.places_shared = true
+		b.visited.read_only = true
+		b.bookmarks.read_only = true
+		fmt.eprintfln("nb: another browser is using %s; history and bookmarks will not be saved", b.profile)
+	}
 }
 
 places_destroy :: proc(b: ^Browser) {
 	places.destroy(&b.visited)
 	places.destroy(&b.bookmarks)
+	places.unlock_profile(&b.places_lock)
 	field.destroy(&b.panel_filter)
+	clear_rows(b)
 	delete(b.panel_rows)
 }
 
@@ -79,29 +95,22 @@ place_key :: proc(location: string) -> string {
 	return abs if err == nil else location
 }
 
-// Saves a list after a change and keeps the panel showing it current. The
-// entry at `kept` (see selected_location) stays selected; without one the
-// selection keeps its row.
+// Saves a list after a change, and drops rows the change removed from the
+// panel. A read-only list is not saved; the status bar says so once.
 @(private = "file")
-list_changed :: proc(b: ^Browser, l: ^places.List, kept := "") {
+list_changed :: proc(b: ^Browser, l: ^places.List) {
 	header := HISTORY_HEADER if l == &b.visited else BOOKMARK_HEADER
-	if !places.save(l, header) {
+	if l.read_only {
+		if !b.places_warned {
+			b.places_warned = true
+			set_message(b, "%s", not_saved_reason(b, l))
+		}
+	} else if !places.save(l, header) {
 		fmt.eprintfln("nb: cannot save %s", l.path)
 	}
 	if panel_list(b) == l {
-		refresh_panel(b, keep_selection = true, kept = kept)
+		prune_rows(b)
 	}
-}
-
-// The location of the selected row (temp-allocated), taken before a change
-// to the list moves its entries.
-@(private = "file")
-selected_location :: proc(b: ^Browser) -> string {
-	l := panel_list(b)
-	if l == nil || b.panel_sel < 0 || b.panel_sel >= len(b.panel_rows) {
-		return ""
-	}
-	return strings.clone(l.entries[b.panel_rows[b.panel_sel]].location, context.temp_allocator)
 }
 
 // Records a page that just loaded. Without a manifest title the page's
@@ -109,9 +118,8 @@ selected_location :: proc(b: ^Browser) -> string {
 record_visit :: proc(b: ^Browser, location: string) {
 	title := b.page.image.manifest.title
 	b.title_pending = title == ""
-	kept := selected_location(b)
 	if places.visit(&b.visited, place_key(location), title, unix_now()) {
-		list_changed(b, &b.visited, kept)
+		list_changed(b, &b.visited)
 	}
 }
 
@@ -129,6 +137,22 @@ update_visit_title :: proc(b: ^Browser) {
 	if places.set_title(&b.visited, place_key(b.page_path), h) {
 		list_changed(b, &b.visited)
 	}
+}
+
+// Why changes to a read-only list are not saved (temp-allocated).
+@(private = "file")
+not_saved_reason :: proc(b: ^Browser, l: ^places.List) -> string {
+	if b.places_shared {
+		return "another Nota Bene window uses this profile, so history and bookmarks are not saved"
+	}
+	return fmt.tprintf("cannot read %s, so it is not saved", l.path)
+}
+
+// A note for a status message about a change to `l`: empty, or why the
+// change will not last.
+@(private = "file")
+unsaved_note :: proc(b: ^Browser, l: ^places.List) -> string {
+	return fmt.tprintf(" (%s)", not_saved_reason(b, l)) if l.read_only else ""
 }
 
 // The text of the page's first Heading, inline children included (temp-allocated).
@@ -174,13 +198,16 @@ toggle_bookmark :: proc(b: ^Browser) {
 	}
 	title := page_title(b)
 	name := title if title != "" else b.page_path
-	kept := selected_location(b)
-	if places.toggle(&b.bookmarks, place_key(b.page_path), title, unix_now()) {
-		set_message(b, "bookmarked %s (Ctrl+Shift+O shows bookmarks)", name)
-	} else {
-		set_message(b, "removed the bookmark for %s", name)
+	switch places.toggle(&b.bookmarks, place_key(b.page_path), title, unix_now()) {
+	case .Added:
+		list_changed(b, &b.bookmarks)
+		set_message(b, "bookmarked %s%s", name, unsaved_note(b, &b.bookmarks) if b.bookmarks.read_only else " (Ctrl+Shift+O shows bookmarks)")
+	case .Removed:
+		list_changed(b, &b.bookmarks)
+		set_message(b, "removed the bookmark for %s%s", name, unsaved_note(b, &b.bookmarks))
+	case .Refused:
+		set_message(b, "cannot bookmark %s: its address has control characters", name)
 	}
-	list_changed(b, &b.bookmarks, kept)
 }
 
 @(private = "file")
@@ -223,31 +250,63 @@ close_panel :: proc(b: ^Browser) {
 	b.dirty = true
 }
 
-// Recomputes the rows for the filter. With `keep_selection` the selection
-// stays on entry `kept` if it is still listed, else on the same row.
-refresh_panel :: proc(b: ^Browser, keep_selection := false, kept := "") {
+@(private = "file")
+clear_rows :: proc(b: ^Browser) {
+	for r in b.panel_rows {
+		delete(r)
+	}
+	clear(&b.panel_rows)
+}
+
+// Lists the entries that match the filter, newest first, and selects the
+// first. Only opening the panel and editing the filter do this: visits made
+// while the panel is open (opening a row in a new tab, a page loading in the
+// background) must not move rows under the keyboard or the mouse.
+refresh_panel :: proc(b: ^Browser) {
 	l := panel_list(b)
 	if l == nil {
 		return
 	}
-	rows := places.filter(l, field.text(&b.panel_filter), context.temp_allocator)
-	clear(&b.panel_rows)
-	append(&b.panel_rows, ..rows[:])
-	sel := 0
-	if keep_selection {
-		sel = min(b.panel_sel, len(b.panel_rows) - 1)
-		for r, i in b.panel_rows {
-			if kept != "" && l.entries[r].location == kept {
-				sel = i
-				break
+	clear_rows(b)
+	for i in places.filter(l, field.text(&b.panel_filter), context.temp_allocator) {
+		append(&b.panel_rows, strings.clone(l.entries[i].location))
+	}
+	b.panel_sel, b.panel_top = 0, 0
+	b.dirty = true
+}
+
+// Drops the rows whose entries are gone (removed, or past the history
+// limit), keeping the order. The selection stays on its entry, or, if that
+// went, on the row that moves up into its place.
+@(private = "file")
+prune_rows :: proc(b: ^Browser) {
+	l := panel_list(b)
+	sel := b.panel_sel
+	for i := len(b.panel_rows) - 1; i >= 0; i -= 1 {
+		if !places.contains(l, b.panel_rows[i]) {
+			delete(b.panel_rows[i])
+			ordered_remove(&b.panel_rows, i)
+			if i < sel {
+				sel -= 1
 			}
 		}
-	} else {
-		b.panel_top = 0
 	}
-	b.panel_sel = max(sel, 0)
+	b.panel_sel = clamp(sel, 0, max(len(b.panel_rows) - 1, 0))
 	keep_selection_visible(b)
 	b.dirty = true
+}
+
+// The entry row `i` shows, looked up by its location.
+@(private = "file")
+row_entry :: proc(l: ^places.List, b: ^Browser, i: int) -> (places.Entry, bool) {
+	if i < 0 || i >= len(b.panel_rows) {
+		return {}, false
+	}
+	k := places.find(l, b.panel_rows[i])
+	if k < 0 {
+		return {}, false
+	}
+	return l.entries[k], true
 }
 
 // How many rows fit in the window.
@@ -327,11 +386,10 @@ row_at :: proc(b: ^Browser, x, y: f32) -> int {
 // tab (the panel stays, so several can be opened).
 @(private = "file")
 open_row :: proc(b: ^Browser, i: int, in_new_tab: bool) {
-	l := panel_list(b)
-	if l == nil || i < 0 || i >= len(b.panel_rows) {
+	if i < 0 || i >= len(b.panel_rows) {
 		return
 	}
-	location := strings.clone(l.entries[b.panel_rows[i]].location, context.temp_allocator)
+	location := strings.clone(b.panel_rows[i], context.temp_allocator)
 	if in_new_tab {
 		new_tab(b, location, activate = false)
 		set_message(b, "opened %s in a new tab", location)
@@ -347,10 +405,10 @@ delete_row :: proc(b: ^Browser, i: int) {
 	if l == nil || i < 0 || i >= len(b.panel_rows) {
 		return
 	}
-	places.remove(l, b.panel_rows[i])
+	places.remove_location(l, b.panel_rows[i])
 	b.panel_sel = i
-	list_changed(b, l) // the next entry moves up into the selected row
-	set_message(b, "removed from %s", "history" if l == &b.visited else "bookmarks")
+	list_changed(b, l) // the next row moves up into the selected one
+	set_message(b, "removed from %s%s", "history" if l == &b.visited else "bookmarks", unsaved_note(b, l))
 }
 
 // Keys for the panel that are not editing keys of its filter.
@@ -385,10 +443,14 @@ panel_key :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers) -> bool {
 }
 
 // A click at window coordinates in the content area while the panel is
-// open. Outside the panel it closes it; the page never sees the click.
+// open. Outside the panel it closes it; the page never sees the click. A
+// click that opens a row or closes the panel also swallows the rest of a
+// double or triple click, which would otherwise land on the page (or open
+// the row again).
 panel_click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, middle: bool, clicks: int) {
 	if !panel_contains(b, x, y) {
 		close_panel(b)
+		b.swallow_clicks = true
 		return
 	}
 	if layout.rect_contains(panel_filter_rect(b), x, y) && !middle {
@@ -404,12 +466,16 @@ panel_click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, middle: bool, c
 		return
 	}
 	b.panel_sel = i
+	b.swallow_clicks = true
 	open_row(b, i, in_new_tab = middle || .Ctrl in mods)
 }
 
 panel_wheel :: proc(b: ^Browser, x, y, dy: f32) -> bool {
 	if !panel_contains(b, x, y) {
 		return false
+	}
+	if dy == 0 {
+		return true // sideways: nothing to scroll, but not the page's either
 	}
 	step := 3 if dy > 0 else -3
 	b.panel_top = clamp(b.panel_top + step, 0, max(len(b.panel_rows) - panel_capacity(b), 0))
@@ -477,7 +543,10 @@ draw_panel :: proc(b: ^Browser) {
 		if i >= len(b.panel_rows) {
 			break
 		}
-		e := l.entries[b.panel_rows[i]]
+		e, ok := row_entry(l, b, i)
+		if !ok {
+			continue
+		}
 		r := row_rect(b, slot)
 		key := KEY_PANEL_BASE + 8 * u64(slot)
 		if i == b.panel_sel {
@@ -513,7 +582,7 @@ draw_panel :: proc(b: ^Browser) {
 	sdl.SetRenderClipRect(b.renderer, &clip)
 	draw_text(b, KEY_PANEL_BASE - 4, hint, PANEL_SMALL_FONT, 0, FAINT, p.x + 12, foot + (PANEL_FOOTER - hh) / 2)
 	sdl.SetRenderClipRect(b.renderer, nil)
-	count := fmt.tprintf("%d of %d", len(b.panel_rows), len(l.entries)) if filter != "" else fmt.tprintf("%d", len(l.entries))
+	count := fmt.tprintf("%d of %d", len(b.panel_rows), len(l.entries)) if filter != "" else fmt.tprintf("%d", len(b.panel_rows))
 	cw, _ := measure_text(&b.fonts, count, PANEL_SMALL_FONT, 0)
 	draw_text(b, KEY_PANEL_BASE - 5, count, PANEL_SMALL_FONT, 0, FAINT, p.x + p.w - 12 - cw, foot + (PANEL_FOOTER - hh) / 2)
 

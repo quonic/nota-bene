@@ -136,9 +136,18 @@ Browser :: struct {
 	bookmarks:    places.List,
 	panel:        Panel_Kind, // which list the panel shows, if it is open
 	panel_filter: Text_Field,
-	panel_rows:   [dynamic]int, // indices into the list that match the filter, newest first
-	panel_sel:    int,          // the selected row
-	panel_top:    int,          // the first row on screen
+	panel_rows:   [dynamic]string, // locations of the entries listed, fixed while the panel is open
+	panel_sel:    int,             // the selected row
+	panel_top:    int,             // the first row on screen
+	places_lock:  places.Lock,
+	places_shared: bool, // another browser holds the profile lock: the lists are read-only
+	places_warned: bool, // the status bar has said a list is not saved
+
+	// Input that belongs to an action already taken: the rest of a multiple
+	// click after it opened a row, and the release of the key that closed
+	// the panel. Neither reaches the page.
+	swallow_clicks: bool,
+	swallow_key_up: sdl.Keycode,
 }
 
 // Logical (layout) size of the content area, which sits between the

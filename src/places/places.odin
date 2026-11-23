@@ -10,6 +10,7 @@ import "core:path/filepath"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
+import "core:sync"
 import "core:time"
 import "core:unicode/utf8"
 
@@ -28,9 +29,10 @@ Entry :: struct {
 // Entries are kept oldest first, so a visit is an append and the newest
 // entry is the last.
 List :: struct {
-	entries: [dynamic]Entry,
-	limit:   int,    // 0 = unbounded
-	path:    string, // where save writes; empty for a list that is not stored
+	entries:   [dynamic]Entry,
+	limit:     int,    // 0 = unbounded
+	path:      string, // where save writes; empty for a list that is not stored
+	read_only: bool,   // save refuses: the file could not be read, or another browser owns the profile
 }
 
 destroy :: proc(l: ^List) {
@@ -103,8 +105,9 @@ contains :: proc(l: ^List, location: string) -> bool {
 }
 
 // Records a visit: a location seen before moves to the newest place with
-// the new title and time. The oldest entries go beyond the limit. False
-// (and nothing recorded) for a location that cannot be stored.
+// the new time, and the new title unless that is empty. The oldest entries
+// go beyond the limit. False (and nothing recorded) for a location that
+// cannot be stored.
 visit :: proc(l: ^List, location, title: string, now: i64) -> bool {
 	if !valid_location(location) {
 		return false
@@ -112,8 +115,10 @@ visit :: proc(l: ^List, location, title: string, now: i64) -> bool {
 	if i := find(l, location); i >= 0 {
 		e := l.entries[i]
 		ordered_remove(&l.entries, i)
-		delete(e.title)
-		e.title = clean_title(title)
+		if clean := clean_title(title); clean != "" {
+			delete(e.title)
+			e.title = clean
+		}
 		e.time = now
 		append(&l.entries, e)
 	} else {
@@ -140,13 +145,18 @@ set_title :: proc(l: ^List, location, title: string) -> bool {
 	return true
 }
 
-// Adds `location` if it is missing, removes it otherwise. Returns whether
-// it is in the list afterwards.
-toggle :: proc(l: ^List, location, title: string, now: i64) -> bool {
+Toggled :: enum {
+	Added,
+	Removed,
+	Refused, // the location cannot be stored
+}
+
+// Adds `location` if it is missing, removes it otherwise.
+toggle :: proc(l: ^List, location, title: string, now: i64) -> Toggled {
 	if remove_location(l, location) {
-		return false
+		return .Removed
 	}
-	return visit(l, location, title, now)
+	return .Added if visit(l, location, title, now) else .Refused
 }
 
 remove :: proc(l: ^List, index: int) {
@@ -250,28 +260,45 @@ parse :: proc(l: ^List, text: string) -> (skipped: int) {
 	return
 }
 
-// Loads the list stored at `path`; a missing or unreadable file gives an
-// empty list. Later saves go to `path`.
-load :: proc(l: ^List, path: string, limit: int) {
+// Loads the list stored at `path`. Later saves go to `path`. A missing file
+// gives an empty list. A file that exists but cannot be read also gives an
+// empty list, made read-only so a save cannot replace what is in it; ok is
+// false then.
+load :: proc(l: ^List, path: string, limit: int) -> (ok: bool) {
 	delete(l.path)
 	l.path = strings.clone(path)
 	l.limit = limit
 	data, err := os.read_entire_file(path, context.temp_allocator)
+	if err == .Not_Exist {
+		return true
+	}
 	if err != nil {
-		return
+		l.read_only = true
+		return false
 	}
 	parse(l, string(data))
+	return true
+}
+
+@(private)
+temp_serial: u64
+
+// A temporary name beside `path`, unique to this process and call, so two
+// browsers saving the same file never write into each other's.
+temp_path :: proc(path: string, allocator := context.allocator) -> string {
+	n := sync.atomic_add(&temp_serial, 1)
+	return fmt.aprintf("%s.%d.%d.tmp", path, os.get_pid(), n, allocator = allocator)
 }
 
 // Writes the list to its path through a temporary file and a rename, so a
 // crash mid-write never leaves a half-written file. The file is private to
-// the user: it is their browsing history.
+// the user: it is their browsing history. A read-only list is not written.
 save :: proc(l: ^List, header: string) -> bool {
-	if l.path == "" {
+	if l.path == "" || l.read_only {
 		return false
 	}
 	_ = os.make_directory_all(filepath.dir(l.path))
-	tmp := strings.concatenate({l.path, ".tmp"}, context.temp_allocator)
+	tmp := temp_path(l.path, context.temp_allocator)
 	f, err := os.open(tmp, {.Write, .Create, .Trunc}, {.Read_User, .Write_User})
 	if err != nil {
 		return false

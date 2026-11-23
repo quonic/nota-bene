@@ -104,6 +104,12 @@ push_event :: proc(b: ^Browser, ev: abi.Event) {
 // A click at logical window coordinates. Ctrl+click and middle click open
 // links in a new background tab.
 click :: proc(b: ^Browser, x, y: f32, mods: abi.Modifiers, middle := false, clicks := 1) {
+	if b.swallow_clicks {
+		if clicks > 1 {
+			return // the rest of a double click that opened a row or closed the panel
+		}
+		b.swallow_clicks = false
+	}
 	if y < TABBAR_HEIGHT {
 		tabbar_click(b, x, y, middle)
 		return
@@ -285,6 +291,14 @@ browser_shortcut :: proc(b: ^Browser, key: sdl.Keycode, mods: abi.Modifiers) -> 
 
 handle_key :: proc(b: ^Browser, e: sdl.KeyboardEvent) {
 	mods := modifiers(e.mod)
+	if !e.down && b.swallow_key_up != 0 && e.key == b.swallow_key_up {
+		b.swallow_key_up = 0
+		return // the page never saw this key go down
+	}
+	panel_was_open := b.panel != .None
+	defer if e.down && panel_was_open && b.panel == .None {
+		b.swallow_key_up = e.key
+	}
 	if e.down && browser_shortcut(b, e.key, mods) {
 		return
 	}

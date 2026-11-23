@@ -1,5 +1,6 @@
 package places_test
 
+import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -85,14 +86,86 @@ test_clean_title :: proc(t: ^testing.T) {
 	testing.expect(t, strings.has_suffix(got, "é"))
 }
 
+// toggle must tell a refused location from a removal, so the browser does
+// not report removing a bookmark it never had.
 @(test)
 test_toggle :: proc(t: ^testing.T) {
 	l: places.List
 	defer places.destroy(&l)
-	testing.expect(t, places.toggle(&l, "nb://a/", "A", 1))
+	testing.expect_value(t, places.toggle(&l, "nb://a/", "A", 1), places.Toggled.Added)
 	testing.expect(t, places.contains(&l, "nb://a/"))
-	testing.expect(t, !places.toggle(&l, "nb://a/", "A", 2))
+	testing.expect_value(t, places.toggle(&l, "nb://a/", "A", 2), places.Toggled.Removed)
 	testing.expect(t, !places.contains(&l, "nb://a/"))
+	testing.expect_value(t, places.toggle(&l, "a\nb", "", 3), places.Toggled.Refused)
+	testing.expect_value(t, len(l.entries), 0)
+}
+
+// A revisit without a title (a reload of a page named by its heading) must
+// not wipe the title the entry already has.
+@(test)
+test_visit_keeps_title_when_new_one_is_empty :: proc(t: ^testing.T) {
+	l: places.List
+	defer places.destroy(&l)
+	places.visit(&l, "a", "From the heading", 1)
+	places.visit(&l, "a", "", 2)
+	testing.expect_value(t, l.entries[0].title, "From the heading")
+	testing.expect_value(t, l.entries[0].time, 2)
+	places.visit(&l, "a", "New title", 3)
+	testing.expect_value(t, l.entries[0].title, "New title")
+}
+
+// Two browsers saving at once must not share a temporary file.
+@(test)
+test_temp_paths_are_unique :: proc(t: ^testing.T) {
+	a := places.temp_path("/p/history", context.temp_allocator)
+	b := places.temp_path("/p/history", context.temp_allocator)
+	testing.expect(t, a != b)
+	testing.expect(t, strings.has_prefix(a, "/p/history."))
+	testing.expect(t, strings.contains(a, fmt.tprintf(".%d.", os.get_pid())))
+}
+
+// A file that exists but cannot be read is never replaced by a save.
+@(test)
+test_unreadable_file_makes_list_read_only :: proc(t: ^testing.T) {
+	dir, err := os.make_directory_temp("", "places-test-*", context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	defer os.remove_all(dir)
+	path, _ := filepath.join({dir, "history"}, context.temp_allocator)
+	testing.expect_value(t, os.make_directory(path), nil) // reading a directory fails
+
+	l: places.List
+	defer places.destroy(&l)
+	testing.expect(t, !places.load(&l, path, 5))
+	testing.expect(t, l.read_only)
+	places.visit(&l, "a", "", 1)
+	testing.expect(t, !places.save(&l, "test"))
+	testing.expect(t, os.is_dir(path))
+
+	// A missing file is only an empty list.
+	missing: places.List
+	defer places.destroy(&missing)
+	other, _ := filepath.join({dir, "bookmarks"}, context.temp_allocator)
+	testing.expect(t, places.load(&missing, other, 5))
+	testing.expect(t, !missing.read_only)
+}
+
+// Only one browser at a time may write a profile; unlocking frees it.
+@(test)
+test_profile_lock :: proc(t: ^testing.T) {
+	when ODIN_OS == .Linux {
+		dir, err := os.make_directory_temp("", "places-test-*", context.temp_allocator)
+		testing.expect_value(t, err, nil)
+		defer os.remove_all(dir)
+		first, ok := places.lock_profile(dir)
+		testing.expect(t, ok)
+		second, ok2 := places.lock_profile(dir)
+		testing.expect(t, !ok2)
+		places.unlock_profile(&second)
+		places.unlock_profile(&first)
+		again, ok3 := places.lock_profile(dir)
+		testing.expect(t, ok3)
+		places.unlock_profile(&again)
+	}
 }
 
 @(test)

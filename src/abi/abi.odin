@@ -33,7 +33,7 @@ Syscall :: enum u32 {
 	Input_Get_Selection = 0x107, // (handle, ptr)          -> 0   writes a Selection
 	Input_Set_Selection = 0x108, // (handle, anchor, caret) -> 0
 	Input_Focus         = 0x109, // (handle)               -> 0   0 takes focus off the page's Inputs
-	// An Image's picture: an encoded PNG or baseline JPEG, decoded by the
+	// An Image's picture: an encoded PNG or JPEG, decoded by the
 	// browser. len 0 clears it.
 	Image_Set_Data      = 0x10A, // (handle, ptr, len)     -> 0
 

@@ -114,7 +114,7 @@ clock ahead, and the first unbounded wait with `Quit`.
 | `0x107` | `Input_Get_Selection` | `handle, ptr`                                                             | 0. Writes a 16-byte `Selection`                                                                                            |
 | `0x108` | `Input_Set_Selection` | `handle, anchor, caret`                                                   | 0. `-RANGE` past the end of the text, `-INVAL` inside a character                                                          |
 | `0x109` | `Input_Focus`         | `handle`, or 0                                                            | 0. Gives the Input keyboard focus; 0 takes focus off the page's Inputs. `-INVAL` for a node not in the tree under the root |
-| `0x10A` | `Image_Set_Data`      | `handle, ptr, len` (≤ 16 MiB): a PNG or baseline JPEG file. 0 clears it   | 0. See [Images](#images)                                                                                                   |
+| `0x10A` | `Image_Set_Data`      | `handle, ptr, len` (≤ 16 MiB): a PNG or JPEG file. 0 clears it            | 0. See [Images](#images)                                                                                                   |
 
 `Handle_Close` on a node detaches it. Its children become detached roots and
 keep their handles.
@@ -202,8 +202,8 @@ Input starts over.
 
 ### Images
 
-An `Image` shows a picture the page hands over as the bytes of a PNG or
-baseline (not progressive) JPEG file. The page embeds the file, or fetches
+An `Image` shows a picture the page hands over as the bytes of a PNG or JPEG
+file. The page embeds the file, or fetches
 it like any other data, and the browser decodes it:
 
 ```odin
@@ -223,14 +223,13 @@ nb.image_set_data(img, data)
   that fetches its images can set `Alt` and show the page at once.
 - **Errors.**
   - `-INVAL` for a node that is not an `Image`, or for bytes that are not a
-    PNG or baseline JPEG that decodes.
+    PNG or JPEG that decodes.
   - `-RANGE` for data over 16 MiB, or a picture over 4096 pixels on a side.
   - `-NOMEM` once the page's decoded images would take more than 256 MiB.
 
   A failed call leaves the previous picture in place.
 - **Formats.** PNG of every kind: grey, RGB and palette images, with or
-  without alpha, 8 or 16 bits. JPEG must be baseline; progressive JPEG fails
-  with `-INVAL`.
+  without alpha, 8 or 16 bits. JPEG baseline or progressive.
 
 ### Input selection
 

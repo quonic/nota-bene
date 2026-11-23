@@ -279,8 +279,8 @@ contains pages written directly in assembly.
    - **Connection reuse.** `nb` keeps a `proto.Pool` of idle, authenticated
      connections, shared by page loads and fetches. A connection is reused
      only for the same address and key.
-6. **Images** (done). `Image_Set_Data` hands the browser a PNG or baseline
-   JPEG that the page embedded or fetched.
+6. **Images** (done). `Image_Set_Data` hands the browser a PNG or JPEG
+   that the page embedded or fetched.
    - **Decoding.** `host` decodes it with Odin's `core:image`, which is pure
      Odin and bounds-checked. It reads the header first, so an oversized
      picture is refused before its pixels are allocated, and it keeps RGBA8

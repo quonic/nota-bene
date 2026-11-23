@@ -79,7 +79,30 @@ heap_limit  ├─────────────────────�
 ```
 
 Permissions are tracked per 4 KiB page and checked on every access, including
-host access to syscall buffers. No page is ever both writable and executable.
+host access to syscall buffers. No page is ever both writable and executable;
+`memory_protect` refuses to make one.
+
+**Instruction cache.** The VM decodes each instruction once, the first time
+it runs, and keeps the result: an op, the register numbers, the immediate,
+the length and the expanded instruction (`src/vm/icache.odin`). Later runs
+skip the fetch, the permission checks and the decoding. Common integer
+instructions have their own op. The rest (CSRs, atomics, F and D, illegal
+encodings) go through the original executor, so faults stay exactly the same.
+
+- **Why it is safe.** W^X means no store, from the page or from the host, can
+  change code that is cached. Code changes only after `memory_protect` makes
+  a page writable. Any permission change that touches an executable page, to
+  or from Exec, drops the whole cache.
+- **Faults.** Only instructions that were fetched successfully are cached. A
+  fetch from a non-executable page, or a 4-byte instruction that runs into
+  one, faults as before.
+- **Size.** There is one 16-byte slot per 2 bytes from the first to the last
+  executable page, so the cache is 8 times the size of the code, not of guest
+  memory. It is allocated zeroed when code first runs and freed by
+  `memory_destroy`; untouched slots stay as unbacked zero pages.
+- **Speed.** `tests/asm/bench.S` under `nbrun` runs about 2.4 times faster:
+  from 154 to 373 million instructions per second with compressed
+  instructions, and from 161 to 381 million without.
 
 ## Capabilities
 
@@ -311,7 +334,6 @@ Later ideas:
 
 - a history and bookmarks view
 - an accessibility bridge: the semantic tree maps directly onto platform accessibility APIs
-- a pre-decoded instruction cache (W^X makes it safe)
 - a GDB remote stub hooked to `ebreak`
 - record and replay
 - hybrid post-quantum handshakes with ML-KEM

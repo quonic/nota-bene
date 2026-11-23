@@ -149,7 +149,7 @@ run :: proc(opts: Options) -> int {
 	b.profile = opts.profile if opts.profile != "" else proto.config_dir(context.temp_allocator)
 	kh_path, _ := filepath.join({b.profile, "known_hosts"}, context.temp_allocator)
 	proto.known_hosts_load(&b.known_hosts, kh_path)
-	b.pool = proto.pool_create()
+	b.pool = proto.pool_create(proto.os_resolver())
 	defer net_shutdown(&b)
 	places_init(&b)
 	defer places_destroy(&b)

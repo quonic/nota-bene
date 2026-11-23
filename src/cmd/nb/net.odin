@@ -14,11 +14,7 @@ Fetch_Job :: struct {
 	location:     string, // owned; `url` points into it
 	url:          proto.URL,
 	pinned:       Maybe(proto.Key),
-	pinned_from:  enum {
-		None,
-		URL,
-		Known_Hosts,
-	},
+	pinned_from:  proto.Key_Source,
 	have:         []u8,
 	pool:         ^proto.Pool, // a reference held for the thread
 	push_history: bool,
@@ -71,11 +67,8 @@ start_fetch :: proc(b: ^Browser, location: string, push_history: bool) {
 	job.url = u
 	job.push_history = push_history
 	host := proto.host_port(u, context.temp_allocator)
-	if u.has_key {
-		job.pinned, job.pinned_from = u.key, .URL
-	} else if k, found := proto.known_hosts_get(&b.known_hosts, host); found {
-		job.pinned, job.pinned_from = k, .Known_Hosts
-	}
+	// Without a pinned key the fetch thread asks DNS (through the pool).
+	job.pinned, job.pinned_from = proto.pinned_key(u, &b.known_hosts)
 	if c, found := b.cache[cache_key(u)]; found {
 		job.have = c.hash
 	}
@@ -114,6 +107,8 @@ poll_fetch :: proc(b: ^Browser) {
 	if r.err != nil {
 		begin_page(b, job.location, job.push_history)
 		switch {
+		case r.from_dns && (r.err == .Handshake || r.err == .Key_Mismatch):
+			set_error(b, "%s did not prove it holds a key published for it in DNS (%s), so the page was not loaded. The record may be out of date, or someone may be intercepting the connection.", server, proto.dns_record_name(u.host, u.port, context.temp_allocator))
 		case r.err == .Handshake && job.pinned_from == .Known_Hosts:
 			set_error(b, "%s did not prove it holds the key pinned for it on your first visit. The server's key may have changed, or someone may be intercepting the connection. If the change is expected, remove the %s line from %s.", server, server, b.known_hosts.path)
 		case r.err == .Handshake && job.pinned_from == .URL:
@@ -132,7 +127,10 @@ poll_fetch :: proc(b: ^Browser) {
 		if !proto.known_hosts_save(&b.known_hosts) {
 			fmt.eprintfln("nb: cannot save %s", b.known_hosts.path)
 		}
-		if job.pinned_from == .None {
+		switch {
+		case job.pinned_from == .None && r.from_dns:
+			set_message(b, "first visit to %s: its key %s matches its DNS record; pinned it", server, proto.key_fingerprint(r.server_key, context.temp_allocator))
+		case job.pinned_from == .None:
 			set_message(b, "first visit to %s: pinned its key %s", server, proto.key_fingerprint(r.server_key, context.temp_allocator))
 		}
 	}
@@ -201,11 +199,9 @@ page_fetch :: proc(p: ^host.Page, id: u64, url: string) {
 	job.location = strings.clone(url)
 	job.url, _ = proto.parse_url(job.location) // the host only hands out valid URLs
 	job.tab, job.serial, job.id = t, t.serial, id
-	if job.url.has_key {
-		job.pinned = job.url.key
-	} else if k, found := proto.known_hosts_get(&b.known_hosts, proto.host_port(job.url, context.temp_allocator)); found {
-		job.pinned, job.from_known = k, true
-	}
+	source: proto.Key_Source
+	job.pinned, source = proto.pinned_key(job.url, &b.known_hosts)
+	job.from_known = source == .Known_Hosts
 	job.pool = b.pool
 	proto.pool_retain(job.pool)
 	append(&b.fetches, job)
@@ -260,7 +256,10 @@ finish_data_fetch :: proc(b: ^Browser, job: ^Data_Fetch) {
 			host.page_fetch_complete(&t.page, job.id, -i64(abi.Errno.RANGE), nil)
 		case:
 			host.page_fetch_complete(&t.page, job.id, -i64(abi.Errno.NET), nil)
-			if r.err == .Handshake && job.pinned != nil {
+			switch {
+			case r.from_dns && (r.err == .Handshake || r.err == .Key_Mismatch):
+				set_message(b, "%s did not prove it holds a key published for it in DNS; the page's request failed", server)
+			case r.err == .Handshake && job.pinned != nil:
 				set_message(b, "%s did not prove it holds the key %s; the page's request failed", server, "pinned for it" if job.from_known else "the page expects")
 			}
 		}

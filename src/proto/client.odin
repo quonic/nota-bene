@@ -3,6 +3,7 @@ package proto
 import "base:runtime"
 import "core:fmt"
 import "core:net"
+import "core:slice"
 import "core:strings"
 import "core:sync"
 
@@ -12,6 +13,7 @@ Fetch_Result :: struct {
 	server_key:   Key,    // the key the server proved it holds
 	not_modified: bool,   // the bundle matching `have` is still current
 	bundle:       Bundle, // valid when err == nil and !not_modified
+	from_dns:     bool,   // the server was held to the keys published for it in DNS
 }
 
 fetch_result_destroy :: proc(r: ^Fetch_Result, allocator := context.allocator) {
@@ -31,10 +33,24 @@ Client :: struct {
 	allocator:  runtime.Allocator, // owns session and host
 }
 
+// Connects and runs the handshake. The server must prove it holds one of
+// `keys`, or any key when there are none: NK for exactly one key, otherwise
+// NX, with the key it reveals checked before anything is sent.
 @(private)
-client_open :: proc(u: URL, pinned: Maybe(Key), conn_allocator: runtime.Allocator, allocator := context.allocator) -> (c: Client, err: Error, detail: string) {
+client_open :: proc(u: URL, keys: []Key, pool: ^Pool, allocator := context.allocator) -> (c: Client, err: Error, detail: string) {
 	host := host_port(u, context.temp_allocator)
-	sock, derr := net.dial_tcp(host)
+	conn_allocator := pool.allocator if pool != nil else context.allocator
+	sock: net.TCP_Socket
+	derr: net.Network_Error
+	if pool != nil && pool.resolver.address != nil {
+		addr, ok := pool.resolver.address(pool.resolver.data, u.host)
+		if !ok {
+			return {}, .Connect, fmt.aprintf("cannot resolve %s", u.host, allocator = allocator)
+		}
+		sock, derr = net.dial_tcp_from_endpoint({addr, int(u.port)})
+	} else {
+		sock, derr = net.dial_tcp(host)
+	}
 	if derr != nil {
 		return {}, .Connect, fmt.aprintf("%v", derr, allocator = allocator)
 	}
@@ -45,7 +61,14 @@ client_open :: proc(u: URL, pinned: Maybe(Key), conn_allocator: runtime.Allocato
 		host      = strings.clone(host, conn_allocator),
 		allocator = conn_allocator,
 	}
+	pinned: Maybe(Key)
+	if len(keys) == 1 {
+		pinned = keys[0]
+	}
 	c.server_key, err = client_handshake(c.session, tcp_conn(sock), pinned)
+	if err == nil && len(keys) > 1 && !slice.contains(keys, c.server_key) {
+		err = .Key_Mismatch
+	}
 	if err != nil {
 		client_close(&c)
 	}
@@ -79,10 +102,23 @@ client_request :: proc(c: ^Client, req: Request) -> (head: Response_Head, err: E
 // when there is one. A reused connection the server has closed in the
 // meantime is replaced by a new one once: both ops only read, so asking
 // again is safe.
+//
+// The server must prove it holds `pinned`. Without a pinned key the pool
+// looks in DNS; a key found there must be proven in the same way, and there
+// is no falling back to trust on first use if it is not. Only when DNS has
+// no key does the handshake accept whatever key the server has.
 @(private)
-exchange :: proc(pool: ^Pool, u: URL, pinned: Maybe(Key), req: Request, allocator := context.allocator) -> (c: Client, head: Response_Head, err: Error, detail: string) {
+exchange :: proc(pool: ^Pool, u: URL, pinned: Maybe(Key), req: Request, allocator := context.allocator) -> (c: Client, head: Response_Head, err: Error, detail: string, from_dns: bool) {
+	expect: DNS_Keys
+	if k, ok := pinned.?; ok {
+		expect.keys[0], expect.count = k, 1
+	} else {
+		expect = dns_keys(pool, u)
+		from_dns = expect.count > 0
+	}
+	keys := expect.keys[:expect.count]
 	if pool != nil {
-		if idle, ok := pool_take(pool, host_port(u, context.temp_allocator), pinned); ok {
+		if idle, ok := pool_take(pool, host_port(u, context.temp_allocator), keys); ok {
 			c = idle
 			if head, err = client_request(&c, req); err == nil {
 				return
@@ -91,7 +127,7 @@ exchange :: proc(pool: ^Pool, u: URL, pinned: Maybe(Key), req: Request, allocato
 		}
 		sync.atomic_add(&pool.dials, 1)
 	}
-	c, err, detail = client_open(u, pinned, pool.allocator if pool != nil else context.allocator, allocator)
+	c, err, detail = client_open(u, keys, pool, allocator)
 	if err != nil {
 		return
 	}
@@ -116,13 +152,14 @@ client_done :: proc(pool: ^Pool, c: ^Client, complete: bool) {
 // Fetches the bundle at `u`, over an idle connection from `pool` or a new
 // one. Blocking: run it off the UI thread.
 //
-// `pinned` is the key already trusted for this server (from the URL or the
-// known_hosts file); without one the handshake learns the key, and the caller
-// decides whether to pin it. `have` is the hash of a cached copy, if any.
+// `pinned` is the key already trusted for this server (see pinned_key);
+// without one the pool's resolver may find keys in DNS (r.from_dns), and
+// otherwise the handshake learns the key. Either way the caller decides
+// whether to pin it. `have` is the hash of a cached copy, if any.
 fetch :: proc(u: URL, pinned: Maybe(Key), have: []u8, pool: ^Pool = nil, allocator := context.allocator) -> (r: Fetch_Result) {
 	c: Client
 	head: Response_Head
-	c, head, r.err, r.detail = exchange(pool, u, pinned, Request{op = OP_GET, path = u.path, have = have}, allocator)
+	c, head, r.err, r.detail, r.from_dns = exchange(pool, u, pinned, Request{op = OP_GET, path = u.path, have = have}, allocator)
 	if r.err != nil {
 		return
 	}
@@ -160,6 +197,7 @@ Read_Result :: struct {
 	server_key: Key,
 	status:     u16,
 	body:       []u8,   // the file for 200, the server's message otherwise
+	from_dns:   bool,   // as for Fetch_Result
 }
 
 read_result_destroy :: proc(r: ^Read_Result, allocator := context.allocator) {
@@ -174,7 +212,7 @@ read_result_destroy :: proc(r: ^Read_Result, allocator := context.allocator) {
 read :: proc(u: URL, pinned: Maybe(Key), max_size: int, pool: ^Pool = nil, allocator := context.allocator) -> (r: Read_Result) {
 	c: Client
 	head: Response_Head
-	c, head, r.err, r.detail = exchange(pool, u, pinned, Request{op = OP_READ, path = u.path}, allocator)
+	c, head, r.err, r.detail, r.from_dns = exchange(pool, u, pinned, Request{op = OP_READ, path = u.path}, allocator)
 	if r.err != nil {
 		return
 	}

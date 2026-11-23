@@ -206,6 +206,26 @@ known_hosts_set :: proc(kh: ^Known_Hosts, host_port: string, k: Key) {
 	kh.entries[strings.clone(host_port)] = k
 }
 
+// Where a pinned key came from.
+Key_Source :: enum u8 {
+	None,        // no key yet: DNS, then trust on first use
+	URL,         // the address names it
+	Known_Hosts, // pinned on an earlier visit
+}
+
+// The key a server must prove it holds, if one is already trusted. A key in
+// the address wins over a pinned one. Keys from DNS rank below both: they
+// are only looked up (by fetch and read) when this finds none.
+pinned_key :: proc(u: URL, kh: ^Known_Hosts) -> (key: Maybe(Key), source: Key_Source) {
+	if u.has_key {
+		return u.key, .URL
+	}
+	if k, ok := known_hosts_get(kh, host_port(u, context.temp_allocator)); ok {
+		return k, .Known_Hosts
+	}
+	return nil, .None
+}
+
 known_hosts_destroy :: proc(kh: ^Known_Hosts) {
 	for host in kh.entries {
 		delete(host)

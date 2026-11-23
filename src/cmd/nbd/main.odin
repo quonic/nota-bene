@@ -135,5 +135,6 @@ main :: proc() {
 	fmt.printfln("nbd: server key %s", key)
 	host := "localhost" if port == proto.DEFAULT_PORT else fmt.tprintf("localhost:%d", port)
 	fmt.printfln("nbd: open nb://%s/ (or nb://%s@%s/ to skip trust-on-first-use)", host, key, host)
+	fmt.printfln("nbd: to publish the key in DNS: %s TXT \"%s\"", proto.dns_record_name("<host>", u16(port), context.temp_allocator), proto.dns_txt_value(pub, context.temp_allocator))
 	server.serve(&srv)
 }

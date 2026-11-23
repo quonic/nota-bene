@@ -1,13 +1,17 @@
 package proto
 
 import "base:runtime"
+import "core:slice"
 import "core:sync"
 import "core:time"
 
 // Connections kept open between requests, so a page load and the fetches
 // that follow it share one handshake per server. A connection is reused only
-// for the same address and, when the caller pins a key, only if that is the
-// key the connection was authenticated with.
+// for the same address and, when the caller pins a key (or DNS publishes
+// keys), only if the connection was authenticated with one of them.
+//
+// The pool also caches the server keys found in DNS (see dns.odin), so one
+// browsing session asks DNS about each server once.
 //
 // Every user holds a reference: the owner from pool_create, plus one per
 // request still running on another thread, so those threads may outlive
@@ -19,6 +23,10 @@ Pool :: struct {
 	closed:    bool,               // guarded by lock
 	refs:      int,                // atomic
 	dials:     int,                // atomic: connections opened through the pool
+	resolver:  Resolver,
+	dns:       map[string]DNS_Entry, // by record name; guarded by lock
+	dns_done:  sync.Cond,            // signalled when a pending lookup ends
+	dns_lookups: int,                // atomic
 }
 
 @(private)
@@ -31,10 +39,13 @@ Idle_Conn :: struct {
 POOL_IDLE_TIMEOUT :: 10 * time.Second
 POOL_MAX_PER_HOST :: 4
 
-pool_create :: proc(allocator := context.allocator) -> ^Pool {
+// `resolver` looks server keys up in DNS; the zero value never does.
+pool_create :: proc(resolver := Resolver{}, allocator := context.allocator) -> ^Pool {
 	p := new(Pool, allocator)
 	p.allocator = allocator
 	p.idle.allocator = allocator
+	p.resolver = resolver
+	p.dns.allocator = allocator
 	p.refs = 1
 	return p
 }
@@ -53,6 +64,10 @@ pool_release :: proc(p: ^Pool) {
 		client_close(&e.client)
 	}
 	delete(p.idle)
+	for name in p.dns {
+		delete(name, p.allocator)
+	}
+	delete(p.dns)
 	free(p, p.allocator)
 }
 
@@ -84,10 +99,10 @@ pool_idle :: proc(p: ^Pool) -> int {
 	return len(p.idle)
 }
 
-// Takes the most recently used idle connection to `host` that `pinned`
-// allows, after dropping the expired ones.
+// Takes the most recently used idle connection to `host` authenticated with
+// one of `keys` (any, when there are none), after dropping the expired ones.
 @(private)
-pool_take :: proc(p: ^Pool, host: string, pinned: Maybe(Key)) -> (c: Client, ok: bool) {
+pool_take :: proc(p: ^Pool, host: string, keys: []Key) -> (c: Client, ok: bool) {
 	sync.mutex_lock(&p.lock)
 	defer sync.mutex_unlock(&p.lock)
 	for i := 0; i < len(p.idle); {
@@ -103,7 +118,7 @@ pool_take :: proc(p: ^Pool, host: string, pinned: Maybe(Key)) -> (c: Client, ok:
 		if e.client.host != host {
 			continue
 		}
-		if k, has := pinned.?; has && k != e.client.server_key {
+		if len(keys) > 0 && !slice.contains(keys, e.client.server_key) {
 			continue
 		}
 		ordered_remove(&p.idle, i)

@@ -13,7 +13,7 @@ Fetch_Result :: struct {
 	server_key:   Key,    // the key the server proved it holds
 	not_modified: bool,   // the bundle matching `have` is still current
 	bundle:       Bundle, // valid when err == nil and !not_modified
-	from_dns:     bool,   // the server was held to the keys published for it in DNS
+	dns:          DNS_Answer, // what DNS said; .Keys: the server was held to them
 }
 
 fetch_result_destroy :: proc(r: ^Fetch_Result, allocator := context.allocator) {
@@ -106,15 +106,15 @@ client_request :: proc(c: ^Client, req: Request) -> (head: Response_Head, err: E
 // The server must prove it holds `pinned`. Without a pinned key the pool
 // looks in DNS; a key found there must be proven in the same way, and there
 // is no falling back to trust on first use if it is not. Only when DNS has
-// no key does the handshake accept whatever key the server has.
+// no key, or could not be asked, does the handshake accept whatever key the
+// server has; `dns` tells the caller which.
 @(private)
-exchange :: proc(pool: ^Pool, u: URL, pinned: Maybe(Key), req: Request, allocator := context.allocator) -> (c: Client, head: Response_Head, err: Error, detail: string, from_dns: bool) {
+exchange :: proc(pool: ^Pool, u: URL, pinned: Maybe(Key), req: Request, allocator := context.allocator) -> (c: Client, head: Response_Head, err: Error, detail: string, dns: DNS_Answer) {
 	expect: DNS_Keys
 	if k, ok := pinned.?; ok {
 		expect.keys[0], expect.count = k, 1
 	} else {
-		expect = dns_keys(pool, u)
-		from_dns = expect.count > 0
+		expect, dns = dns_keys(pool, u)
 	}
 	keys := expect.keys[:expect.count]
 	if pool != nil {
@@ -153,13 +153,14 @@ client_done :: proc(pool: ^Pool, c: ^Client, complete: bool) {
 // one. Blocking: run it off the UI thread.
 //
 // `pinned` is the key already trusted for this server (see pinned_key);
-// without one the pool's resolver may find keys in DNS (r.from_dns), and
+// without one the pool's resolver may find keys in DNS (r.dns), and
 // otherwise the handshake learns the key. Either way the caller decides
-// whether to pin it. `have` is the hash of a cached copy, if any.
+// whether to pin it, but must not pin when r.dns is .Failed: the next
+// visit should ask DNS again. `have` is the hash of a cached copy, if any.
 fetch :: proc(u: URL, pinned: Maybe(Key), have: []u8, pool: ^Pool = nil, allocator := context.allocator) -> (r: Fetch_Result) {
 	c: Client
 	head: Response_Head
-	c, head, r.err, r.detail, r.from_dns = exchange(pool, u, pinned, Request{op = OP_GET, path = u.path, have = have}, allocator)
+	c, head, r.err, r.detail, r.dns = exchange(pool, u, pinned, Request{op = OP_GET, path = u.path, have = have}, allocator)
 	if r.err != nil {
 		return
 	}
@@ -197,7 +198,7 @@ Read_Result :: struct {
 	server_key: Key,
 	status:     u16,
 	body:       []u8,   // the file for 200, the server's message otherwise
-	from_dns:   bool,   // as for Fetch_Result
+	dns:        DNS_Answer, // as for Fetch_Result
 }
 
 read_result_destroy :: proc(r: ^Read_Result, allocator := context.allocator) {
@@ -212,7 +213,7 @@ read_result_destroy :: proc(r: ^Read_Result, allocator := context.allocator) {
 read :: proc(u: URL, pinned: Maybe(Key), max_size: int, pool: ^Pool = nil, allocator := context.allocator) -> (r: Read_Result) {
 	c: Client
 	head: Response_Head
-	c, head, r.err, r.detail, r.from_dns = exchange(pool, u, pinned, Request{op = OP_READ, path = u.path}, allocator)
+	c, head, r.err, r.detail, r.dns = exchange(pool, u, pinned, Request{op = OP_READ, path = u.path}, allocator)
 	if r.err != nil {
 		return
 	}

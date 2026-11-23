@@ -80,11 +80,11 @@ _9000._nb.example.org.  TXT "v=nb1; key=<server-key>"   ; any other port
   fits easily): Windows returns each string separately.
 - **Ports:** each port has its own name, because two servers on one host have
   two keys. A record for the wrong server would make every visit fail.
-- **Several records:** all their keys are accepted (the first 4), so a key can
-  be rotated by publishing the new one beside the old. With one key the
-  browser uses NK. With several it uses NX and checks the key the server
-  proves before it sends anything.
-- **Not looked up:** IP literals, `localhost` and names under `.localhost`.
+- **Several records:** all their keys are accepted (the first 4). With one
+  key the browser uses NK. With several it uses NX and checks the key the
+  server proves before it sends anything.
+- **Not looked up:** IP literals, `localhost`, names under `.localhost` and
+  `.local` (mDNS), and single-label names such as `intranet`.
 
 Which key the browser expects, in order:
 
@@ -96,23 +96,43 @@ Which key the browser expects, in order:
 DNS is only asked when there is no key from 1 or 2, so a DNS record can never
 override a pin. A key found in DNS is pinned after the first successful
 visit, like a key learned on first use, and the status bar says that it
-matched the DNS record.
+matched the DNS record. An existing pin is never replaced, not even by a
+load that started before it was made.
 
 - **Wrong key:** if the server cannot prove a key from DNS, the browser
   refuses the page. It does not fall back to NX, because that would let
   anyone who can block the real server downgrade the connection.
-- **No record:** if there is no record, or the lookup fails or times out
-  (1 s per name server), the browser uses NX and trust on first use.
-- **Caching:** the browser asks once per name per session. A miss or a
-  failure is retried after 60 s.
+- **No record:** if DNS answers that there is no record (no TXT records, no
+  valid `v=nb1` record, or no such name), the browser uses NX and trust on
+  first use, and pins the key.
+- **Failed lookup:** each name server gets the query in turn, twice over,
+  with a 1 s wait for each reply (resolv.conf's `options timeout:` and
+  `attempts:` change this, up to 5 s and 3 attempts). A timeout, SERVFAIL,
+  REFUSED, a truncated reply or a malformed one moves on to the next. If no
+  server answers usably, the browser loads the page with NX but does not pin
+  the key, so the next visit asks DNS again. The status bar says so.
+- **Caching:** a pool of connections keeps up to 256 answers for the
+  session. Keys are kept for 10 minutes, "no record" for 60 s and a failure
+  for 10 s. A record fixed after a refusal takes effect when its answer
+  expires.
+
+**Rotating a key:** a pin outranks DNS, so a new key in DNS only helps
+visitors who have not pinned the old one. Publishing the new key beside the
+old lets first-time visitors in while both are possible, but a returning
+visitor whose browser pinned the old key gets the "key changed" error as
+soon as the server switches. To recover, they remove the server's line from
+`known_hosts`, and the next visit checks the new key against DNS. Operators
+should announce the change, publish the new key before switching, and remove
+the old record afterwards.
 
 **Security:** the lookup is not authenticated, and the browser does not
-validate DNSSEC. A DNS key narrows trust on first use's window only as far as
-you trust DNS. An attacker who can intercept the connection but not your DNS
-answers can no longer get their key pinned on your first visit. An attacker
-who controls your DNS can still remove the record (you are back to trust on
-first use) or replace it (you pin their key). A key in the address is still
-the strong option.
+validate DNSSEC, so a DNS key is only as trustworthy as the DNS answers you
+get. It helps against an attacker who can intercept the connection to the
+server but cannot forge or block your DNS traffic. An attacker who can do
+both on your first visit still wins: forging "no such name" (or a record with
+their key) gets their key pinned, as with plain trust on first use. Blocking
+DNS alone does not get a key pinned, because a failed lookup pins nothing. A
+key in the address is still the strong option.
 
 ## Messages
 

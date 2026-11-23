@@ -125,10 +125,10 @@ test_txt_rdata :: proc(t: ^testing.T) {
 test_dns_names :: proc(t: ^testing.T) {
 	testing.expect_value(t, proto.dns_record_name("Example.ORG.", proto.DEFAULT_PORT, context.temp_allocator), "_nb.example.org")
 	testing.expect_value(t, proto.dns_record_name("example.org", 9000, context.temp_allocator), "_9000._nb.example.org")
-	for host in ([]string{"example.org", "a-b.example.", "x_y.test"}) {
+	for host in ([]string{"example.org", "a-b.example.", "x_y.test", "local.example"}) {
 		testing.expectf(t, proto.dns_lookup_allowed(host), "%q should be looked up", host)
 	}
-	for host in ([]string{"127.0.0.1", "::1", "localhost", "LocalHost.", "app.localhost", "a..b", "ex!ample.org", ""}) {
+	for host in ([]string{"127.0.0.1", "::1", "localhost", "LocalHost.", "app.localhost", "printer.local", "Box.Local.", "intranet", "intranet.", "a..b", "ex!ample.org", ""}) {
 		testing.expectf(t, !proto.dns_lookup_allowed(host), "%q should not be looked up", host)
 	}
 }
@@ -169,36 +169,41 @@ test_dns_cache :: proc(t: ^testing.T) {
 	}
 
 	for _ in 0 ..< 2 {
-		keys := proto.dns_keys(pool, url("nb://site.test/"))
-		testing.expect(t, keys.count == 1 && keys.keys[0] == k)
+		keys, answer := proto.dns_keys(pool, url("nb://site.test/"))
+		testing.expect(t, answer == .Keys && keys.count == 1 && keys.keys[0] == k)
 	}
 	testing.expect_value(t, sync.atomic_load(&f.lookups), 1)
 	testing.expect_value(t, proto.pool_dns_lookups(pool), 1)
 
 	// Another port is another record, absent here; the miss is remembered.
 	for _ in 0 ..< 2 {
-		testing.expect_value(t, proto.dns_keys(pool, url("nb://site.test:9000/")).count, 0)
+		_, answer := proto.dns_keys(pool, url("nb://site.test:9000/"))
+		testing.expect_value(t, answer, proto.DNS_Answer.No_Record)
 	}
 	testing.expect_value(t, sync.atomic_load(&f.lookups), 2)
 
-	for s in ([]string{"nb://127.0.0.1/", "nb://[::1]/", "nb://localhost:4041/", "nb://app.localhost/"}) {
-		testing.expectf(t, proto.dns_keys(pool, url(s)).count == 0, "%s", s)
+	for s in ([]string{"nb://127.0.0.1/", "nb://[::1]/", "nb://localhost:4041/", "nb://app.localhost/", "nb://printer.local/", "nb://intranet/"}) {
+		_, answer := proto.dns_keys(pool, url(s))
+		testing.expectf(t, answer == .Not_Asked, "%s: %v", s, answer)
 	}
 	testing.expect_value(t, sync.atomic_load(&f.lookups), 2)
 
 	// No resolver, no pool: no DNS.
 	plain := proto.pool_create()
 	defer proto.pool_close(plain)
-	testing.expect_value(t, proto.dns_keys(plain, url("nb://site.test/")).count, 0)
-	testing.expect_value(t, proto.dns_keys(nil, url("nb://site.test/")).count, 0)
+	_, plain_answer := proto.dns_keys(plain, url("nb://site.test/"))
+	testing.expect_value(t, plain_answer, proto.DNS_Answer.Not_Asked)
+	_, nil_answer := proto.dns_keys(nil, url("nb://site.test/"))
+	testing.expect_value(t, nil_answer, proto.DNS_Answer.Not_Asked)
 
-	// A failed lookup counts as no record and is not retried at once.
+	// A failed lookup is told apart from "no record", and not retried at once.
 	down: Fake_DNS
 	down.fail = true
 	dpool := proto.pool_create(fake_resolver(&down))
 	defer proto.pool_close(dpool)
 	for _ in 0 ..< 2 {
-		testing.expect_value(t, proto.dns_keys(dpool, url("nb://site.test/")).count, 0)
+		_, answer := proto.dns_keys(dpool, url("nb://site.test/"))
+		testing.expect_value(t, answer, proto.DNS_Answer.Failed)
 	}
 	testing.expect_value(t, sync.atomic_load(&down.lookups), 1)
 }
@@ -222,7 +227,8 @@ test_dns_concurrent :: proc(t: ^testing.T) {
 		w.pool = pool
 		threads[i] = thread.create_and_start_with_poly_data(&w, proc(w: ^Worker) {
 			u, _ := proto.parse_url("nb://site.test/")
-			w.count = proto.dns_keys(w.pool, u).count
+			keys, _ := proto.dns_keys(w.pool, u)
+			w.count = keys.count
 		})
 	}
 	for th in threads {
@@ -271,10 +277,10 @@ test_dns_fetch :: proc(t: ^testing.T) {
 	// The key from DNS: NK succeeds.
 	r := proto.fetch(url("good.test", port), nil, nil, pool)
 	testing.expectf(t, r.err == nil, "good: %s %s", proto.error_text(r.err), r.detail)
-	testing.expect(t, r.from_dns && r.server_key == pub)
+	testing.expect(t, r.dns == .Keys && r.server_key == pub)
 	proto.fetch_result_destroy(&r)
 	rd := proto.read(url("good.test", port, "/hello.elf"), nil, 1 << 20, pool)
-	testing.expect(t, rd.err == nil && rd.status == proto.STATUS_OK && rd.from_dns)
+	testing.expect(t, rd.err == nil && rd.status == proto.STATUS_OK && rd.dns == .Keys)
 	proto.read_result_destroy(&rd)
 
 	// A key the server does not hold: refused, with no request sent and no
@@ -282,44 +288,212 @@ test_dns_fetch :: proc(t: ^testing.T) {
 	requests, dials := sync.atomic_load(&srv.requests), proto.pool_dials(pool)
 	r = proto.fetch(url("wrong.test", port), nil, nil, pool)
 	testing.expect_value(t, r.err, proto.Error.Handshake)
-	testing.expect(t, r.from_dns)
+	testing.expect_value(t, r.dns, proto.DNS_Answer.Keys)
 	proto.fetch_result_destroy(&r)
 	rd = proto.read(url("wrong.test", port, "/hello.elf"), nil, 1 << 20, pool)
-	testing.expect(t, rd.err == .Handshake && rd.from_dns)
+	testing.expect(t, rd.err == .Handshake && rd.dns == .Keys)
 	proto.read_result_destroy(&rd)
 	testing.expect_value(t, sync.atomic_load(&srv.requests), requests)
 	testing.expect_value(t, proto.pool_dials(pool), dials + 2)
 
 	// Several keys (a rotation): the server must prove one of them.
 	r = proto.fetch(url("rotating.test", port), nil, nil, pool)
-	testing.expectf(t, r.err == nil && r.from_dns && r.server_key == pub, "rotating: %v", r.err)
+	testing.expectf(t, r.err == nil && r.dns == .Keys && r.server_key == pub, "rotating: %v", r.err)
 	proto.fetch_result_destroy(&r)
 	requests = sync.atomic_load(&srv.requests)
 	r = proto.fetch(url("stale.test", port), nil, nil, pool)
 	testing.expect_value(t, r.err, proto.Error.Key_Mismatch)
-	testing.expect(t, r.from_dns)
+	testing.expect_value(t, r.dns, proto.DNS_Answer.Keys)
 	proto.fetch_result_destroy(&r)
 	testing.expect_value(t, sync.atomic_load(&srv.requests), requests)
 
 	// A pinned key wins, and DNS is not asked.
 	lookups := sync.atomic_load(&f.lookups)
 	r = proto.fetch(url("pinned.test", port), pub, nil, pool)
-	testing.expectf(t, r.err == nil && !r.from_dns, "pinned: %v", r.err)
+	testing.expectf(t, r.err == nil && r.dns == .Not_Asked, "pinned: %v", r.err)
 	proto.fetch_result_destroy(&r)
 	testing.expect_value(t, sync.atomic_load(&f.lookups), lookups)
 
 	// No record: trust on first use, as before.
 	r = proto.fetch(url("none.test", port), nil, nil, pool)
-	testing.expectf(t, r.err == nil && !r.from_dns && r.server_key == pub, "none: %v", r.err)
+	testing.expectf(t, r.err == nil && r.dns == .No_Record && r.server_key == pub, "none: %v", r.err)
 	proto.fetch_result_destroy(&r)
 
-	// A failed lookup: the same.
+	// A failed lookup: the page loads, and the caller learns not to pin.
 	down: Fake_DNS
 	down.fail = true
 	dpool := proto.pool_create(fake_resolver(&down))
 	defer proto.pool_close(dpool)
 	r = proto.fetch(url("good.test", port), nil, nil, dpool)
-	testing.expectf(t, r.err == nil && !r.from_dns && r.server_key == pub, "down: %v", r.err)
+	testing.expectf(t, r.err == nil && r.dns == .Failed && r.server_key == pub, "down: %v", r.err)
 	proto.fetch_result_destroy(&r)
 	testing.expect_value(t, sync.atomic_load(&down.lookups), 1)
+}
+
+// The cache stays bounded however many names a page fetches from.
+@(test)
+test_dns_cache_cap :: proc(t: ^testing.T) {
+	f: Fake_DNS
+	pool := proto.pool_create(fake_resolver(&f))
+	defer proto.pool_close(pool)
+	for i in 0 ..< proto.DNS_CACHE_MAX + 10 {
+		u, _ := proto.parse_url(fmt.tprintf("nb://host%d.test/", i))
+		proto.dns_keys(pool, u)
+	}
+	testing.expect_value(t, proto.pool_dns_cached(pool), proto.DNS_CACHE_MAX)
+	// A name that did not fit is looked up again; one that did is not.
+	lookups := sync.atomic_load(&f.lookups)
+	late, _ := proto.parse_url(fmt.tprintf("nb://host%d.test/", proto.DNS_CACHE_MAX + 5))
+	early, _ := proto.parse_url("nb://host0.test/")
+	proto.dns_keys(pool, late)
+	proto.dns_keys(pool, early)
+	testing.expect_value(t, sync.atomic_load(&f.lookups), lookups + 1)
+}
+
+@(test)
+test_resolv_conf_options :: proc(t: ^testing.T) {
+	timeout, attempts := proto.resolv_conf_options("nameserver 10.0.0.1\n")
+	testing.expect(t, timeout == proto.DNS_TIMEOUT && attempts == proto.DNS_ATTEMPTS)
+	timeout, attempts = proto.resolv_conf_options("nameserver 10.0.0.1\noptions edns0 timeout:2 attempts:3\n")
+	testing.expect(t, timeout == 2 * time.Second && attempts == 3)
+	timeout, attempts = proto.resolv_conf_options("options timeout:30 attempts:9\n")
+	testing.expect(t, timeout == proto.DNS_MAX_TIMEOUT && attempts == proto.DNS_MAX_ATTEMPTS, "capped")
+	timeout, attempts = proto.resolv_conf_options("options timeout:0 attempts:x\n")
+	testing.expect(t, timeout == proto.DNS_TIMEOUT && attempts == proto.DNS_ATTEMPTS, "nonsense is ignored")
+}
+
+// Builds a reply to `query` with the given flags and TXT answers.
+@(private)
+dns_reply :: proc(query: []u8, rcode: u8, truncated := false, answers: ..string) -> []u8 {
+	out := make([dynamic]u8, context.temp_allocator)
+	append(&out, query[0], query[1], 0x81 | (0x02 if truncated else 0), 0x80 | rcode)
+	append(&out, 0, 1, 0, u8(len(answers)), 0, 0, 0, 0)
+	append(&out, ..query[12:]) // the question
+	for a in answers {
+		append(&out, 0xC0, 0x0C, 0, 16, 0, 1, 0, 0, 0, 60, 0, u8(len(a) + 1), u8(len(a)))
+		append(&out, ..transmute([]u8)a)
+	}
+	return out[:]
+}
+
+@(test)
+test_dns_txt_reply :: proc(t: ^testing.T) {
+	query_buf: [net.DNS_PACKET_MIN_LEN]u8
+	query, qerr := net.make_dns_packet(query_buf[:], 0x1234, "_nb.site.test", .TXT)
+	testing.expect(t, qerr == nil)
+
+	values, ok := proto.dns_txt_reply(dns_reply(query, 0, false, "v=nb1; key=x", "other"), context.temp_allocator)
+	testing.expect(t, ok && len(values) == 2 && values[0] == "v=nb1; key=x" && values[1] == "other")
+	values, ok = proto.dns_txt_reply(dns_reply(query, 0), context.temp_allocator)
+	testing.expect(t, ok && len(values) == 0, "NOERROR without records is an answer")
+	values, ok = proto.dns_txt_reply(dns_reply(query, 3), context.temp_allocator)
+	testing.expect(t, ok && len(values) == 0, "NXDOMAIN is an answer")
+
+	_, ok = proto.dns_txt_reply(dns_reply(query, 2), context.temp_allocator)
+	testing.expect(t, !ok, "SERVFAIL is a failure")
+	_, ok = proto.dns_txt_reply(dns_reply(query, 5), context.temp_allocator)
+	testing.expect(t, !ok, "REFUSED is a failure")
+	_, ok = proto.dns_txt_reply(dns_reply(query, 0, true, "v=nb1"), context.temp_allocator)
+	testing.expect(t, !ok, "a truncated reply is a failure")
+	cut := dns_reply(query, 0, false, "v=nb1; key=x")
+	_, ok = proto.dns_txt_reply(cut[:len(cut) - 4], context.temp_allocator)
+	testing.expect(t, !ok, "a malformed reply is a failure")
+	_, ok = proto.dns_txt_reply(query, context.temp_allocator)
+	testing.expect(t, !ok, "a query is not a reply")
+	_, ok = proto.dns_txt_reply(nil, context.temp_allocator)
+	testing.expect(t, !ok, "no reply (a timeout) is a failure")
+}
+
+// A name server on loopback that ignores the first `drop` queries and then
+// answers each with `rcode` (and a record for NOERROR).
+Fake_Server :: struct {
+	sock:     net.UDP_Socket,
+	endpoint: net.Endpoint,
+	drop:     int,
+	rcode:    u8,
+	truncate: bool,
+	queries:  int,  // atomic
+	stop:     bool, // atomic
+	thread:   ^thread.Thread,
+}
+
+@(private)
+fake_server_start :: proc(t: ^testing.T, s: ^Fake_Server) -> bool {
+	sock, err := net.make_bound_udp_socket(net.IP4_Loopback, 0)
+	if !testing.expectf(t, err == nil, "udp: %v", err) {
+		return false
+	}
+	s.sock = sock
+	s.endpoint, _ = net.bound_endpoint(sock)
+	net.set_option(sock, .Receive_Timeout, 20 * time.Millisecond)
+	s.thread = thread.create_and_start_with_poly_data(s, proc(s: ^Fake_Server) {
+		buf: [512]u8
+		for !sync.atomic_load(&s.stop) {
+			n, from, rerr := net.recv_udp(s.sock, buf[:])
+			if rerr != nil || n < 12 {
+				continue
+			}
+			if sync.atomic_add(&s.queries, 1) < s.drop {
+				continue
+			}
+			reply := dns_reply(buf[:n], s.rcode, s.truncate, "v=nb1; key=k") if s.rcode == 0 else dns_reply(buf[:n], s.rcode)
+			net.send_udp(s.sock, reply, from)
+		}
+	})
+	return true
+}
+
+@(private)
+fake_server_stop :: proc(s: ^Fake_Server) {
+	sync.atomic_store(&s.stop, true)
+	thread.join(s.thread)
+	thread.destroy(s.thread)
+	net.close(s.sock)
+}
+
+// One lost packet does not make the lookup fail; a server that fails moves
+// on to the next; with no answer at all the lookup fails.
+@(test)
+test_dns_query_retry :: proc(t: ^testing.T) {
+	timeout :: 150 * time.Millisecond
+
+	lossy := Fake_Server{drop = 1}
+	if !fake_server_start(t, &lossy) {
+		return
+	}
+	defer fake_server_stop(&lossy)
+	values, ok := proto.dns_query_txt("_nb.site.test", {lossy.endpoint}, timeout, 2, context.temp_allocator)
+	testing.expect(t, ok && len(values) == 1 && values[0] == "v=nb1; key=k", "answered on the second attempt")
+	testing.expect_value(t, sync.atomic_load(&lossy.queries), 2)
+
+	failing := Fake_Server{rcode = 2} // SERVFAIL
+	truncating := Fake_Server{truncate = true}
+	good := Fake_Server{}
+	for s in ([]^Fake_Server{&failing, &truncating, &good}) {
+		if !fake_server_start(t, s) {
+			return
+		}
+	}
+	defer fake_server_stop(&failing)
+	defer fake_server_stop(&truncating)
+	defer fake_server_stop(&good)
+	values, ok = proto.dns_query_txt("_nb.site.test", {failing.endpoint, truncating.endpoint, good.endpoint}, timeout, 1, context.temp_allocator)
+	testing.expect(t, ok && len(values) == 1, "the third server answers")
+
+	nxdomain := Fake_Server{rcode = 3}
+	if !fake_server_start(t, &nxdomain) {
+		return
+	}
+	defer fake_server_stop(&nxdomain)
+	values, ok = proto.dns_query_txt("_nb.site.test", {nxdomain.endpoint, good.endpoint}, timeout, 1, context.temp_allocator)
+	testing.expect(t, ok && len(values) == 0, "NXDOMAIN is final")
+
+	silent := Fake_Server{drop = 1 << 30}
+	if !fake_server_start(t, &silent) {
+		return
+	}
+	defer fake_server_stop(&silent)
+	_, ok = proto.dns_query_txt("_nb.site.test", {silent.endpoint, failing.endpoint}, timeout, 2, context.temp_allocator)
+	testing.expect(t, !ok, "no usable answer is a failure")
+	testing.expect_value(t, sync.atomic_load(&silent.queries), 2)
 }

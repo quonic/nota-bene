@@ -27,7 +27,7 @@ options:
   --font FILE         TrueType font to use (also: NB_FONT)
   --mem SIZE          guest memory per page (default 64M)
   --profile DIR       pinned server keys, site storage, history and bookmarks
-                      (default ~/.config/new-browser)
+                      (default ~/.config/nota-bene)
   --click X,Y         after the page settles, click at X,Y (repeatable)
   --middle-click X,Y  after the page settles, middle-click at X,Y (repeatable)
   --double-click X,Y  after the page settles, double-click at X,Y (repeatable)

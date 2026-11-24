@@ -138,8 +138,8 @@ Known_Hosts :: struct {
 	entries: map[string]Key,
 }
 
-// Where per-user browser state lives: $XDG_CONFIG_HOME/new-browser,
-// ~/.config/new-browser, or %APPDATA%\new-browser.
+// Where per-user browser state lives: $XDG_CONFIG_HOME/nota-bene,
+// ~/.config/nota-bene, or %APPDATA%\nota-bene.
 config_dir :: proc(allocator := context.allocator) -> string {
 	base := os.get_env("XDG_CONFIG_HOME", context.temp_allocator)
 	when ODIN_OS == .Windows {
@@ -154,7 +154,7 @@ config_dir :: proc(allocator := context.allocator) -> string {
 		}
 		base, _ = filepath.join({home, ".config"}, context.temp_allocator)
 	}
-	dir, _ := filepath.join({base, "new-browser"}, allocator)
+	dir, _ := filepath.join({base, "nota-bene"}, allocator)
 	return dir
 }
 
@@ -208,8 +208,8 @@ known_hosts_set :: proc(kh: ^Known_Hosts, host_port: string, k: Key) {
 
 // Where a pinned key came from.
 Key_Source :: enum u8 {
-	None,        // no key yet: DNS, then trust on first use
-	URL,         // the address names it
+	None, // no key yet: DNS, then trust on first use
+	URL, // the address names it
 	Known_Hosts, // pinned on an earlier visit
 }
 

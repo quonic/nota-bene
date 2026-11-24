@@ -216,11 +216,11 @@ and back send its hash as `have`, so an unchanged page costs only a 304.
 | --- | --- |
 | `nbd.key` (`nbd --key`) | the server's X25519 private key, hex. Created on first run, mode 0600. |
 | `--sign FILE` | the publisher's ed25519 private key, hex. Created on first use. |
-| `~/.config/new-browser/known_hosts` | pinned server keys, one `host:port key` per line. `nb --profile DIR` moves the whole profile, and `$XDG_CONFIG_HOME` and `%APPDATA%` are honoured. |
-| `~/.config/new-browser/storage/` | per-site storage (see [syscalls.md](syscalls.md#storage-0x400)) |
-| `~/.config/new-browser/history` | pages the user loaded, one `time<TAB>address<TAB>title` line each (Unix seconds), oldest first. At most 1000. |
-| `~/.config/new-browser/bookmarks` | bookmarks, in the same form as `history` |
-| `~/.config/new-browser/lock` | empty; the browser that holds an `flock` on it is the one that saves `history` and `bookmarks` |
+| `~/.config/nota-bene/known_hosts` | pinned server keys, one `host:port key` per line. `nb --profile DIR` moves the whole profile, and `$XDG_CONFIG_HOME` and `%APPDATA%` are honoured. |
+| `~/.config/nota-bene/storage/` | per-site storage (see [syscalls.md](syscalls.md#storage-0x400)) |
+| `~/.config/nota-bene/history` | pages the user loaded, one `time<TAB>address<TAB>title` line each (Unix seconds), oldest first. At most 1000. |
+| `~/.config/nota-bene/bookmarks` | bookmarks, in the same form as `history` |
+| `~/.config/nota-bene/lock` | empty; the browser that holds an `flock` on it is the one that saves `history` and `bookmarks` |
 
 ## Not yet implemented
 

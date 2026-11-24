@@ -55,7 +55,7 @@ Serve pages over the network and browse them:
 ./build/nb nb://localhost/feed    # a page that fetches build/site/feed.txt
 ```
 
-On the first visit, `nb` pins the server's key in `~/.config/new-browser/known_hosts`. Site storage, `history` and `bookmarks` also live in that directory; use `--profile DIR` to point `nb` somewhere else. Later visits fail loudly if the server cannot prove it holds that key. `nbd --sign publisher.key` also signs every page, and `nb` shows who signed it in the status bar.
+On the first visit, `nb` pins the server's key in `~/.config/nota-bene/known_hosts`. Site storage, `history` and `bookmarks` also live in that directory; use `--profile DIR` to point `nb` somewhere else. Later visits fail loudly if the server cannot prove it holds that key. `nbd --sign publisher.key` also signs every page, and `nb` shows who signed it in the status bar.
 
 Keys:
 

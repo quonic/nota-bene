@@ -18,7 +18,9 @@ import "../../vm"
 USAGE :: `usage: nbrun [options] page.elf
 
 options:
-  --budget N     stop the page after N instructions (default 1000000000)
+  --budget N     stop the page after N instructions (default 1000000000;
+                 under --gdb, no limit until GDB detaches unless
+                 --budget is given)
   --mem SIZE     guest memory size, e.g. 64M (default 64M, max 1G)
   --stack SIZE   stack size (default 1M)
   --trace        print every syscall
@@ -36,7 +38,8 @@ killed from GDB).
 
 Options :: struct {
 	path:       string,
-	budget:     u64,
+	budget:     u64, // max(u64): no limit
+	budget_set: bool, // --budget was given
 	cfg:        loader.Config,
 	trace:      bool,
 	trace_inst: bool,
@@ -44,6 +47,8 @@ Options :: struct {
 	storage:    string,
 	gdb_port:   int, // 0: no debugger
 }
+
+DEFAULT_BUDGET :: 1_000_000_000
 
 SLICE :: 1_000_000
 // Under GDB the socket is polled for Ctrl-C between slices, so they are shorter.
@@ -207,6 +212,13 @@ debug :: proc(page: ^host.Page, opts: Options) -> (idle: bool) {
 	switch s.done {
 	case .Detached:
 		fmt.eprintln("nbrun: GDB detached; running on")
+		opts := opts
+		if !opts.budget_set {
+			// Nobody is driving any more, so the usual limit applies again,
+			// counted from here.
+			instret := page.cpu.instret
+			opts.budget = instret + min(DEFAULT_BUDGET, max(u64) - instret)
+		}
 		return run(page, opts)
 	case .Killed:
 	case .No:
@@ -271,7 +283,6 @@ trace_instruction :: proc(p: ^host.Page) {
 }
 
 parse_args :: proc(args: []string) -> (opts: Options, ok: bool) {
-	opts.budget = 1_000_000_000
 	opts.cfg = loader.DEFAULT_CONFIG
 	for i := 0; i < len(args); i += 1 {
 		arg := args[i]
@@ -290,6 +301,7 @@ parse_args :: proc(args: []string) -> (opts: Options, ok: bool) {
 		case "--budget":
 			v := value(args, &i) or_return
 			opts.budget = strconv.parse_u64_of_base(v, 10) or_return
+			opts.budget_set = true
 		case "--mem":
 			v := value(args, &i) or_return
 			opts.cfg.mem_size = loader.parse_size(v) or_return
@@ -323,6 +335,11 @@ parse_args :: proc(args: []string) -> (opts: Options, ok: bool) {
 	if opts.gdb_port != 0 && opts.trace_inst {
 		fmt.eprintln("nbrun: --trace-inst cannot be used with --gdb")
 		return opts, false
+	}
+	if !opts.budget_set {
+		// A human driving GDB decides when the page stops, so a debugging
+		// session has no budget unless one is asked for.
+		opts.budget = max(u64) if opts.gdb_port != 0 else DEFAULT_BUDGET
 	}
 	return opts, opts.path != ""
 }

@@ -279,8 +279,13 @@ Breakpoint 1, 0x0000000000010020 in target ()
   code or to unmapped memory fails with "Cannot access memory".
 - **Stops.** A fault is SIGSEGV, or SIGILL for an illegal instruction. GDB
   cannot continue past it: continuing ends the page. Syscalls and waits
-  work as they do without GDB. Exiting, the instruction budget and waiting
-  forever end the session.
+  work as they do without GDB. Exiting and waiting forever end the
+  session.
+- **No budget by default.** Under `--gdb` the page has no instruction
+  budget, so a long session is not cut off. Pass `--budget N` to set one;
+  running out of it then ends the session. If GDB detaches, the default
+  budget of 1,000,000,000 instructions applies again, counted from the
+  detach.
 - **Detaching** (`detach`) lets the page run on without the debugger.
   Quitting GDB kills it.
 
